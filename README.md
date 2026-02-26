@@ -1,14 +1,13 @@
-# astrbot-plugin-helloworld
+# AstrBot本地回忆插件
 
-AstrBot 插件模板 / A template plugin for AstrBot plugin feature
+为AstrBot打造的轻量级本地记忆插件，使用本地Embedding模型、本地数据库存储和回忆聊天记录。无需API密钥，零Embedding成本，节约Token，完全保护隐私。
+使用Cron Job自动记录对话，通过深度学习语义搜索帮助AI自动回忆起相关经历。
 
-> [!NOTE]
-> This repo is just a template of [AstrBot](https://github.com/AstrBotDevs/AstrBot) Plugin.
-> 
-> [AstrBot](https://github.com/AstrBotDevs/AstrBot) is an agentic assistant for both personal and group conversations. It can be deployed across dozens of mainstream instant messaging platforms, including QQ, Telegram, Feishu, DingTalk, Slack, LINE, Discord, Matrix, etc. In addition, it provides a reliable and extensible conversational AI infrastructure for individuals, developers, and teams. Whether you need a personal AI companion, an intelligent customer support agent, an automation assistant, or an enterprise knowledge base, AstrBot enables you to quickly build AI applications directly within your existing messaging workflows.
+A lightweight local memory plugin for AstrBot that uses local embedding models and local database storage to save and recall chat history. No API keys required, zero embedding costs, token-saving, and complete privacy protection. 
+Automatically records conversations using Cron jobs, and helps AI automatically recall relevant experiences through deep learning semantic search.
 
-# Supports
+# TBC..
 
-- [AstrBot Repo](https://github.com/AstrBotDevs/AstrBot)
-- [AstrBot Plugin Development Docs (Chinese)](https://docs.astrbot.app/dev/star/plugin-new.html)
-- [AstrBot Plugin Development Docs (English)](https://docs.astrbot.app/en/dev/star/plugin-new.html)
+在做了在做了，很快会出的，因为自家AI还等着用（真实）
+
+It won't take long!
