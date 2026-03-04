@@ -1,16 +1,29 @@
 import json
-import logging
 import re
 from typing import List
+from astrbot.api import logger
 from .models import DailySummary
-
-logger = logging.getLogger(__name__)
 
 class DailySummarizer:
     def __init__(self, llm_generate_func, base_system_prompt: str = "", base_user_prompt: str = ""):
         self.llm_generate = llm_generate_func
         self.base_system_prompt = base_system_prompt.strip()
         self.base_user_prompt = base_user_prompt.strip()
+
+    def _extract_json(self, text: str) -> str:
+        """从文本中提取 JSON 结构体，处理 Markdown 代码块和前后无关文字"""
+        # 尝试匹配 ```json ... ``` 或 ``` ... ```
+        match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', text, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+        
+        # 如果没匹配到代码块，尝试寻找第一个 { 或 [ 到最后一个 } 或 ]
+        # 这里假设输出的是一个对象 {} 或 数组 []
+        obj_match = re.search(r'(\{[\s\S]*\}|\[[\s\S]*\])', text)
+        if obj_match:
+            return obj_match.group(1).strip()
+            
+        return text.strip()
 
     async def extract_nodes_from_events(self, events: List[dict], date_str: str, existing_nodes_context: str = "") -> list | None:
         """从已有的事件叙述中提取记忆节点"""
@@ -55,10 +68,7 @@ class DailySummarizer:
                 system_prompt=system_prompt,
             )
 
-            content = llm_resp.completion_text.strip()
-            content = re.sub(r'^```json\s*', '', content, flags=re.IGNORECASE)
-            content = re.sub(r'^```\s*', '', content, flags=re.IGNORECASE)
-            content = re.sub(r'\s*```$', '', content)
+            content = self._extract_json(llm_resp.completion_text)
             
             data = json.loads(content)
             nodes_data = data.get("nodes", [])
@@ -111,11 +121,7 @@ class DailySummarizer:
                 system_prompt=system_prompt,
             )
 
-            content = llm_resp.completion_text.strip()
-            content = re.sub(r'^```json\s*', '', content, flags=re.IGNORECASE)
-            content = re.sub(r'^```\s*', '', content, flags=re.IGNORECASE)
-            content = re.sub(r'\s*```$', '', content)
-            content = content.strip()
+            content = self._extract_json(llm_resp.completion_text)
 
             data = json.loads(content)
             summary = DailySummary(**data)
