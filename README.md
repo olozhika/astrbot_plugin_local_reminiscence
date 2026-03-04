@@ -8,7 +8,7 @@ A lightweight local memory plugin for AstrBot that uses local embedding models a
 
 (另：如果你想把这个插件改成适配其他平台的插件，应该只要改main.py就好了)
 
----
+
 
 ## ✨ 功能特性 / Features
 
