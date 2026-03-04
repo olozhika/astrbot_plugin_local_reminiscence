@@ -1,5 +1,5 @@
 # AstrBot本地回忆插件[APLR]
-# AstrBot Local Reminiscence Plugin [APLR]
+# AstrBot Local Reminiscence Plugin
 
 轻量级本地记忆插件，使用本地Embedding模型、本地数据库存储和回忆聊天记录。无需API密钥，零Embedding成本，节约Token，完全保护隐私。
 使用Cron Job自动记录对话，通过深度学习语义搜索帮助AI自动回忆起相关经历。
@@ -100,6 +100,7 @@ To use this plugin, you must perform the first three steps!
 ---
 ## 流程图
 
+![APLR流程图](./mermaid-diagram-.png)
 
 ## 📄 To Do List
 
