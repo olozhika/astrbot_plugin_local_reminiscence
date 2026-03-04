@@ -1,0 +1,74 @@
+{
+  "core_address": {
+    "description": "AstrBot Core 路径",
+    "type": "string",
+    "hint": "AstrBot Core 的绝对路径，用于定位聊天记录。",
+    "default": "地址/.astrbot_launcher/instances/实例名/core/"
+  },
+  "dialog_folder": {
+    "description": "聊天记录文件夹路径",
+    "type": "string",
+    "hint": "存放聊天记录 JSON 文件的文件夹路径。相对于 Core 的路径。",
+    "default": "data/plugin_data/APLR_chat_history"
+  },
+  "memory_db_path": {
+    "description": "记忆数据库路径",
+    "type": "string",
+    "hint": "存放 APLR 记忆数据库的路径。相对于 Core 的路径。",
+    "default": "data/plugin_data/APLR_DailyReview.db"
+  },
+  "vector_db_path": {
+    "description": "向量数据库路径",
+    "type": "string",
+    "hint": "存放 ChromaDB 向量数据库的路径。相对于 Core 的路径。",
+    "default": "data/plugin_data/APLR_VectorDB"
+  },
+  "target_user_id": {
+    "description": "目标用户 ID",
+    "type": "string",
+    "hint": "要提取聊天记录的目标用户 ID (例如 Lanya_QQ:FriendMessage:947628188)。",
+    "default": "Lanya_QQ:FriendMessage:947628188"
+  },
+  "username": {
+    "description": "用户名称",
+    "type": "string",
+    "hint": "在生成的聊天记录中显示的用户名称，AI的长期记忆里用户使用的将会是这个名字。",
+    "default": "olozhika"
+  },
+  "top_n_events": {
+    "description": "回忆匹配 - 检索事件数量",
+    "type": "int",
+    "hint": "从向量数据库中匹配最接近的事件数量。",
+    "default": 10
+  },
+  "m1_top_events": {
+    "description": "回忆匹配 - 返回最相关事件数量",
+    "type": "int",
+    "hint": "从排序后的事件中选择前__个事件返回。",
+    "default": 3
+  },
+  "m2_random_events": {
+    "description": "回忆匹配 - 返回随机事件数量",
+    "type": "int",
+    "hint": "从排序后的事件中另选择随机__个事件返回。",
+    "default": 2
+  },
+  "embedding_model": {
+    "description": "向量化模型名称",
+    "type": "string",
+    "hint": "用于向量化的 SentenceTransformer 模型名称。注意，本插件在第一次加载时网络需要能够访问HuggingFace.",
+    "default": "paraphrase-multilingual-MiniLM-L12-v2"
+  },
+  "auto_recall_probability": {
+    "description": "自动触发记忆检索概率",
+    "type": "float",
+    "hint": "当没有关键词触发时，自动触发记忆检索的概率 (0-1)。",
+    "default": 0.3
+  },
+  "auto_recall_threshold": {
+    "description": "自动触发记忆最低相关度",
+    "type": "float",
+    "hint": "自动检索记忆时，只有相关度高于此值的事件才会被注入 (0-100)。",
+    "default": 45.0
+  }
+}
