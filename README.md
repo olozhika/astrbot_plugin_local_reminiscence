@@ -46,7 +46,7 @@ To use this plugin, you must perform the first three steps!
 
 2.  **配置插件 / Configuration**:
     - 设置目标用户ID用于识别对话，`机器人ID:FriendMessage:会话ID`，相关对话会用于每日总结。注：目前建议使用私聊（FriendMessage）或平台对话，因为作者的AI还没群聊过，当前代码用于群聊时，AI容易分不清群友谁是谁！
-    - 设置用户名称，在AI的记忆中你（设置的目标用户）使用的名字
+    - 设置用户名称和AI名称，这是在AI的记忆中你（设置的目标用户）和它使用的名字
     - 其他配置不太重要，有需要就改
 
 3.  **设置每日总结 / Daily Summary**
