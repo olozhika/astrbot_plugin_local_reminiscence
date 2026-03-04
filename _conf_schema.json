@@ -1,27 +1,21 @@
 {
-  "core_address": {
-    "description": "AstrBot Core 路径",
-    "type": "string",
-    "hint": "AstrBot Core 的绝对路径，用于定位聊天记录。",
-    "default": "地址/.astrbot_launcher/instances/实例名/core/"
-  },
   "dialog_folder": {
     "description": "聊天记录文件夹路径",
     "type": "string",
-    "hint": "存放聊天记录 JSON 文件的文件夹路径。相对于 Core 的路径。",
-    "default": "data/plugin_data/APLR_chat_history"
+    "hint": "存放聊天记录 JSON 文件的文件夹路径。相对于插件数据目录的路径。",
+    "default": "APLR_chat_history"
   },
   "memory_db_path": {
     "description": "记忆数据库路径",
     "type": "string",
-    "hint": "存放 APLR 记忆数据库的路径。相对于 Core 的路径。",
-    "default": "data/plugin_data/APLR_DailyReview.db"
+    "hint": "存放 APLR 记忆数据库的路径。相对于插件数据目录的路径。",
+    "default": "APLR_DailyReview.db"
   },
   "vector_db_path": {
     "description": "向量数据库路径",
     "type": "string",
-    "hint": "存放 ChromaDB 向量数据库的路径。相对于 Core 的路径。",
-    "default": "data/plugin_data/APLR_VectorDB"
+    "hint": "存放 ChromaDB 向量数据库的路径。相对于插件数据目录的路径。",
+    "default": "APLR_VectorDB"
   },
   "target_user_id": {
     "description": "目标用户 ID",
