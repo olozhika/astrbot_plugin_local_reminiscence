@@ -1,0 +1,11 @@
+# 向量数据库（必需）
+chromadb
+
+# 语义向量化模型（必需）
+sentence-transformers
+
+# 数据模型校验（必需）
+pydantic
+
+# 中文分词（推荐）
+jieba
