@@ -44,6 +44,7 @@ class LocalReminiscencePlugin(Star):
         self.vector_db_path = resolve_path(vector_db_path_rel, data_dir)
         self.target_user_id = self.config.get("target_user_id", "Lanya_QQ:FriendMessage:947628188")
         self.username = self.config.get("username", "olozhika")
+        self.ai_name = self.config.get("ai_name", "Lanya")
         embedding_model = self.config.get("embedding_model", "paraphrase-multilingual-MiniLM-L12-v2")
 
         # 确保目录存在
@@ -180,7 +181,7 @@ class LocalReminiscencePlugin(Star):
                             for ev in selected_events:
                                 recall_text += f"📅 {ev['date']}\n"
                                 recall_text += f"📍 {ev['narrative']}\n"
-                                recall_text += f"💭 Lanya感到{ev['emotion']}\n"
+                                recall_text += f"💭 {self.ai_name}感到{ev['emotion']}\n"
                                 recall_text += f"(相关度{ev.get('relevance', 0)}%)\n"
                                 recall_text += "---\n"
                             req.system_prompt += recall_text
@@ -292,6 +293,7 @@ class LocalReminiscencePlugin(Star):
 
             summarizer = DailySummarizer(
                 llm_generate_func=llm_generate_func,
+                ai_name=self.ai_name,
                 base_system_prompt=self.config.get("default_prompt", ""),
                 base_user_prompt=self.config.get("user_prompts", "")
             )
@@ -443,7 +445,7 @@ class LocalReminiscencePlugin(Star):
         for ev in selected_events:
             resp += f"📅 {ev['date']}\n"
             resp += f"📍 {ev['narrative']}\n"
-            resp += f"💭 Lanya感到{ev['emotion']}\n"
+            resp += f"💭 {self.ai_name}感到{ev['emotion']}\n"
             resp += f"(事件相关度{ev.get('relevance', 0)}%)\n"
             resp += "---\n"
         
@@ -545,6 +547,7 @@ class LocalReminiscencePlugin(Star):
                     db_path=core_db_path,
                     output_dir=self.dialog_folder,
                     username=self.username,
+                    ai_name=self.ai_name,
                     platform="AstrBot",
                     target_date=date_str,
                     target_user_id=self.target_user_id
@@ -619,6 +622,7 @@ class LocalReminiscencePlugin(Star):
             # 4. 初始化总结器
             summarizer = DailySummarizer(
                 llm_generate_func=llm_generate_func,
+                ai_name=self.ai_name,
                 base_system_prompt=base_system_prompt,
                 base_user_prompt=base_user_prompt
             )
