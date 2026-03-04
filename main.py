@@ -8,16 +8,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Dict
 from astrbot.api.event import filter, AstrMessageEvent
-from astrbot.api.star import Context, Star, register
+from astrbot.api.star import Context, Star, register, StarTools
 from astrbot.api import logger, llm_tool
 from astrbot.api.provider import ProviderRequest
 from astrbot.core.conversation_mgr import Conversation
 from .database import MemoryDB
 from .summarizer import DailySummarizer
 from .vector_db import VectorDB
+from .chat_history_extract import clean_dialogue_with_different_limits
 import random
 
-@register("local_reminiscence", "olozhika", "全本地长期记忆及自动回忆插件", "1.0.0")
+@register("local_reminiscence", "olozhika", "本地记忆插件，包含每日总结工具", "1.0.0")
 class LocalReminiscencePlugin(Star):
     def __init__(self, context: Context, config: any = None):
         super().__init__(context)
@@ -25,25 +26,22 @@ class LocalReminiscencePlugin(Star):
         self.config = config if config else {}
         
         # 获取配置项
-        core_address = self.config.get("core_address", "./")
-        dialog_folder_rel = self.config.get("dialog_folder", "data/plugin_data/APLR_chat_history")
-        memory_db_path_rel = self.config.get("memory_db_path", "data/plugin_data/APLR_DailyReview.db")
-        vector_db_path_rel = self.config.get("vector_db_path", "data/plugin_data/APLR_VectorDB")
+        dialog_folder_rel = self.config.get("dialog_folder", "APLR_chat_history")
+        memory_db_path_rel = self.config.get("memory_db_path", "APLR_DailyReview.db")
+        vector_db_path_rel = self.config.get("vector_db_path", "APLR_VectorDB")
 
-        base_dir = Path(__file__).parent
+        data_dir = StarTools.get_data_dir()
         
-        # 路径解析逻辑：优先考虑绝对路径，其次考虑相对于 core_address，最后相对于插件目录
-        def resolve_path(path_str, core_path, base_path):
+        # 路径解析逻辑：优先考虑绝对路径，否则相对于插件数据目录
+        def resolve_path(path_str, data_path):
             p = Path(path_str)
             if p.is_absolute():
                 return p
-            if core_path:
-                return (Path(core_path) / p).resolve()
-            return (base_path / p).resolve()
+            return (data_path / p).resolve()
 
-        self.dialog_folder = resolve_path(dialog_folder_rel, core_address, base_dir)
-        self.db_path = resolve_path(memory_db_path_rel, core_address, base_dir)
-        self.vector_db_path = resolve_path(vector_db_path_rel, core_address, base_dir)
+        self.dialog_folder = resolve_path(dialog_folder_rel, data_dir)
+        self.db_path = resolve_path(memory_db_path_rel, data_dir)
+        self.vector_db_path = resolve_path(vector_db_path_rel, data_dir)
         self.target_user_id = self.config.get("target_user_id", "Lanya_QQ:FriendMessage:947628188")
         self.username = self.config.get("username", "olozhika")
         embedding_model = self.config.get("embedding_model", "paraphrase-multilingual-MiniLM-L12-v2")
@@ -538,12 +536,21 @@ class LocalReminiscencePlugin(Star):
         if not date_str or not date_str.strip():
             date_str = datetime.now().strftime("%Y-%m-%d")
 
-        # 如果是今天，尝试执行提取脚本以确保数据最新/存在
+        # 如果是今天，尝试执行提取逻辑以确保数据最新/存在
         if date_str == datetime.now().strftime("%Y-%m-%d"):
-            extract_script = Path(__file__).parent / "chat_history_extract.py"
-            if extract_script.exists():
-                # 使用当前环境的 python 执行提取脚本，并传递日期参数、目标用户 ID 和用户名
-                os.system(f'python "{extract_script}" "{date_str}" "{self.target_user_id}" "{self.username}"')
+            try:
+                # 核心数据库通常位于 data/data_v4.db
+                core_db_path = Path.cwd() / "data" / "data_v4.db"
+                clean_dialogue_with_different_limits(
+                    db_path=core_db_path,
+                    output_dir=self.dialog_folder,
+                    username=self.username,
+                    platform="AstrBot",
+                    target_date=date_str,
+                    target_user_id=self.target_user_id
+                )
+            except Exception as e:
+                logger.error(f"提取聊天记录失败: {e}")
 
         try:
             datetime.strptime(date_str, "%Y-%m-%d")
