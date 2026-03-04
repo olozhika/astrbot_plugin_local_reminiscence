@@ -5,8 +5,9 @@ from astrbot.api import logger
 from .models import DailySummary
 
 class DailySummarizer:
-    def __init__(self, llm_generate_func, base_system_prompt: str = "", base_user_prompt: str = ""):
+    def __init__(self, llm_generate_func, ai_name: str = "Lanya", base_system_prompt: str = "", base_user_prompt: str = ""):
         self.llm_generate = llm_generate_func
+        self.ai_name = ai_name
         self.base_system_prompt = base_system_prompt.strip()
         self.base_user_prompt = base_user_prompt.strip()
 
@@ -33,7 +34,7 @@ class DailySummarizer:
         events_text = "\n---\n".join([f"事件ID: {ev['event_id']}\n叙述: {ev['narrative']}" for ev in events])
         
         from .models import MemoryNode
-        schema = {
+        schema_dict = {
             "type": "object",
             "properties": {
                 "nodes": {
@@ -43,11 +44,13 @@ class DailySummarizer:
             },
             "required": ["nodes"]
         }
+        # 替换 schema 中的占位符
+        schema_str = json.dumps(schema_dict, ensure_ascii=False, indent=2).replace("{ai_name}", self.ai_name)
         
         context_text = f"\n【已知记忆节点背景】\n{existing_nodes_context}\n" if existing_nodes_context else ""
         
         system_prompt = f"""你正在从一组你之前总结的事件中提取记忆节点。必须严格按照以下 JSON Schema 输出 JSON 数据：
-{json.dumps(schema, ensure_ascii=False, indent=2)}
+{schema_str}
 
 【提取规则】
 - 必须输出合法的 JSON 对象，不要包含任何解释文字或 Markdown 代码块。
@@ -79,11 +82,14 @@ class DailySummarizer:
             return None
 
     async def generate_summary(self, conversation_text: str, date_str: str, existing_nodes_context: str = "") -> DailySummary | None:
-        schema = DailySummary.model_json_schema()
+        schema_dict = DailySummary.model_json_schema()
+        # 替换 schema 中的占位符
+        schema_str = json.dumps(schema_dict, ensure_ascii=False, indent=2).replace("{ai_name}", self.ai_name)
+        
         context_text = f"\n【已知记忆节点背景】\n{existing_nodes_context}\n" if existing_nodes_context else ""
         
         core_system_prompt = f"""你正在回顾并总结今天与朋友的交流。必须严格按照以下 JSON Schema 输出 JSON 数据：
-{json.dumps(schema, ensure_ascii=False, indent=2)}
+{schema_str}
 
 【总结规则】
 - 必须输出合法的 JSON 对象，不要包含任何解释文字或 Markdown 代码块。
