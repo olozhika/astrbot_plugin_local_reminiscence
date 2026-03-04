@@ -41,11 +41,10 @@ To use this plugin, you must perform the first three steps!
 
 1.  **下载安装 / Installation**
     - 从Astrbot插件市场搜索下载此插件
-    - 注意第一次下载（加载）本插件时需要有办法（魔法）链接至HuggingFace以便下载模型！
+    - 注意第一次下载本插件时需要有办法（魔法）链接至HuggingFace以便下载模型！只要本插件成功启动过一次就不用魔法了！
     - 下载时会自动安装依赖，可能需要等一会
 
 2.  **配置插件 / Configuration**:
-    - 到配置界面把core地址改成自己Astrbot的core目录
     - 设置目标用户ID用于识别对话，`机器人ID:FriendMessage:会话ID`，相关对话会用于每日总结。注：目前建议使用私聊（FriendMessage）或平台对话，因为作者的AI还没群聊过，当前代码用于群聊时，AI容易分不清群友谁是谁！
     - 设置用户名称，在AI的记忆中你（设置的目标用户）使用的名字
     - 其他配置不太重要，有需要就改
