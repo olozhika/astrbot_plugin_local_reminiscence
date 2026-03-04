@@ -6,6 +6,7 @@
 
 A lightweight local memory plugin for AstrBot that uses local embedding models and local database storage to save and recall chat history. No API keys required, zero embedding costs, token-saving, and complete privacy protection. Automatically records conversations using Cron jobs, and helps AI automatically recall relevant experiences through deep learning semantic search.
 
+(另：如果你想把这个插件改成适配其他平台的插件，应该只要改main.py就好了)
 ---
 
 ## ✨ 功能特性 / Features
