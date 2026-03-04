@@ -25,7 +25,7 @@ class LocalReminiscencePlugin(Star):
         self.config = config if config else {}
         
         # 获取配置项
-        core_address = self.config.get("core_address", "")
+        core_address = self.config.get("core_address", "./")
         dialog_folder_rel = self.config.get("dialog_folder", "data/plugin_data/APLR_chat_history")
         memory_db_path_rel = self.config.get("memory_db_path", "data/plugin_data/APLR_DailyReview.db")
         vector_db_path_rel = self.config.get("vector_db_path", "data/plugin_data/APLR_VectorDB")
