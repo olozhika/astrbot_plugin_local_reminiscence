@@ -29,6 +29,12 @@
     "hint": "在生成的聊天记录中显示的用户名称，AI的长期记忆里用户使用的将会是这个名字。",
     "default": "olozhika"
   },
+  "ai_name": {
+    "description": "AI名称",
+    "type": "string",
+    "hint": "AI在聊天记录和记忆中使用的名称。",
+    "default": "Lanya"
+  },
   "top_n_events": {
     "description": "回忆匹配 - 检索事件数量",
     "type": "int",
