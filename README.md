@@ -73,7 +73,7 @@ To use this plugin, you must perform the first three steps!
   用户根据输入文本手动搜索相关记忆。
   Manually search for relevant memories based on input text.
 
-  - Tool: `recall_memory_command [text] [count]`
+  - Tool: `recall_memory_tool [text] [count]`
     AI根据输入它自己输入文本手动搜索相关记忆，信息返回给AI。
 
 - `/recall_node_command [name]`
