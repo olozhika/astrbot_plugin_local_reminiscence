@@ -60,19 +60,28 @@ To use this plugin, you must perform the first three steps!
 
 ---
 
-## ⌨️ 指令 / Commands
+## ⌨️ 指令和工具 / Commands & Tools
 
 - `/daily_summary_command [YYYY-MM-DD]`
-  手动触发指定日期的总结（默认为今天）。
+  用户手动触发指定日期的总结（默认为今天）。
   Manually trigger a summary for a specific date (defaults to today).
 
+  - Tool: `daily_summary_tool [YYYY-MM-DD]`
+    AI手动触发指定日期的总结（默认为今天）。
+
 - `/recall_memory_command [text] [count]`
-  根据输入文本手动搜索相关记忆。
+  用户根据输入文本手动搜索相关记忆。
   Manually search for relevant memories based on input text.
+
+  - Tool: `recall_memory_command [text] [count]`
+    AI根据输入它自己输入文本手动搜索相关记忆，信息返回给AI。
 
 - `/recall_node_command [name]`
   搜索特定的记忆节点（人物、地点或概念）。
   Search for a specific memory node (person, place, or concept).
+
+  - Tool: `recall_node_command [name]`
+    AI根据它自己输入的关键词搜索特定的记忆节点（人物、地点或概念），信息返回给AI。
 
 - `/update_nodes_command [YYYY-MM-DD]`
   从指定日期的已有事件中提取记忆节点，无需重新总结。本指令通常不需要使用。
@@ -81,6 +90,11 @@ To use this plugin, you must perform the first three steps!
 - `/vectorize_events [YYYY-MM-DD]`
   将指定日期的事件向量化并存入向量数据库。本指令通常不需要使用。
   Vectorize events of a specific date and store them in the vector database.
+
+`recall_memory_command`和`recall_node_command`实际是给人类在不让AI知情的条件下偷偷看它记忆用的(x)
+使用范例如下（第一句这对吗？？？）
+![人不能什么事情都跟AI说](./截图 2026-03-08 06-34-05.png)
+图名: 人不能什么事情都跟拥有长期记忆的AI说
 
 ---
 
