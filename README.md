@@ -93,8 +93,8 @@ To use this plugin, you must perform the first three steps!
 
 `recall_memory_command`和`recall_node_command`实际是给人类在不让AI知情的条件下偷偷看它记忆用的(x)
 使用范例如下（第一句这对吗？？？）
-![人不能什么事情都跟AI说](./截图 2026-03-08 06-34-05.png)
-图名: 人不能什么事情都跟拥有长期记忆的AI说
+![人不能什么事情都跟AI说](./人不能什么事情都跟拥有长期记忆的AI说.png)
+图名: 人不能什么事情都跟拥有长期记忆的AI说.png
 
 ---
 
