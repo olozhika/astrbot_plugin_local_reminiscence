@@ -42,7 +42,7 @@ class LocalReminiscencePlugin(Star):
         self.dialog_folder = resolve_path(dialog_folder_rel, data_dir)
         self.db_path = resolve_path(memory_db_path_rel, data_dir)
         self.vector_db_path = resolve_path(vector_db_path_rel, data_dir)
-        self.target_user_id = self.config.get("target_user_id", "Lanya_QQ:FriendMessage:947628188")
+        self.target_user_id_list = self.config.get("target_user_id_list", ["Lanya_QQ:FriendMessage:947628188"])
         self.username = self.config.get("username", "olozhika")
         self.ai_name = self.config.get("ai_name", "Lanya")
         embedding_model = self.config.get("embedding_model", "paraphrase-multilingual-MiniLM-L12-v2")
@@ -226,6 +226,40 @@ class LocalReminiscencePlugin(Star):
         """进行每日总结用的工具，回顾并总结今日或指定日期的交流。用法：/daily_summary_command [日期]（可选，默认今天，格式YYYY-MM-DD）。人类专用版！"""
         async for result in self._daily_summary_logic(event):
             yield result
+
+    @filter.command("extract_chat_history_command")
+    async def extract_chat_history_command(self, event: AstrMessageEvent):
+        """手动提取指定日期的聊天记录。用法：/extract_chat_history_command [日期]（格式YYYY-MM-DD）。"""
+        args = event.message_str.strip().split()
+        if len(args) < 2:
+            yield event.plain_result("请提供日期，格式为 YYYY-MM-DD")
+            return
+        
+        date_str = args[1]
+        try:
+            datetime.strptime(date_str, "%Y-%m-%d")
+        except ValueError:
+            yield event.plain_result("日期格式不正确，请使用 YYYY-MM-DD")
+            return
+        
+        yield event.plain_result(f"正在提取 {date_str} 的聊天记录...")
+        
+        try:
+            core_db_path = Path.cwd() / "data" / "data_v4.db"
+            for target_user_id in self.target_user_id_list:
+                clean_dialogue_with_different_limits(
+                    db_path=core_db_path,
+                    output_dir=self.dialog_folder,
+                    username=self.username,
+                    ai_name=self.ai_name,
+                    platform="AstrBot",
+                    target_date=date_str,
+                    target_user_id=target_user_id
+                )
+            yield event.plain_result(f"✅ 已成功提取 {date_str} 的聊天记录。")
+        except Exception as e:
+            logger.error(f"提取聊天记录失败: {e}")
+            yield event.plain_result(f"❌ 提取聊天记录失败: {e}")
 
     @filter.command("vectorize_events")
     async def vectorize_events_command(self, event: AstrMessageEvent):
@@ -543,15 +577,16 @@ class LocalReminiscencePlugin(Star):
             try:
                 # 核心数据库通常位于 data/data_v4.db
                 core_db_path = Path.cwd() / "data" / "data_v4.db"
-                clean_dialogue_with_different_limits(
-                    db_path=core_db_path,
-                    output_dir=self.dialog_folder,
-                    username=self.username,
-                    ai_name=self.ai_name,
-                    platform="AstrBot",
-                    target_date=date_str,
-                    target_user_id=self.target_user_id
-                )
+                for target_user_id in self.target_user_id_list:
+                    clean_dialogue_with_different_limits(
+                        db_path=core_db_path,
+                        output_dir=self.dialog_folder,
+                        username=self.username,
+                        ai_name=self.ai_name,
+                        platform="AstrBot",
+                        target_date=date_str,
+                        target_user_id=target_user_id
+                    )
             except Exception as e:
                 logger.error(f"提取聊天记录失败: {e}")
 
@@ -561,39 +596,52 @@ class LocalReminiscencePlugin(Star):
             yield event.plain_result("日期格式好像不对哦，记得用 YYYY-MM-DD 这种格式~")
             return
         
-        # 寻找聊天记录文件
-        dialog_file = self.dialog_folder / f"{date_str}_dialog.json"
-        if not dialog_file.exists():
-            # 如果没找到，尝试提取一次（可能是补录历史记录）
-            extract_script = Path(__file__).parent / "chat_history_extract.py"
-            if extract_script.exists():
-                logger.info(f"[APLR] 没找到 {date_str} 的本地记录，尝试从数据库提取...")
-                os.system(f'python "{extract_script}" "{date_str}" "{self.target_user_id}" "{self.username}"')
-            
-            # 提取后再检查一次
-            if not dialog_file.exists():
-                logger.info(f"[APLR] 没找到 {date_str} 的聊天记录，是不是那天没说话呀？")
-                return
-
-        # 读取聊天记录
-        try:
-            with open(dialog_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            conversations = data.get("conversations", [])
-            if not conversations:
-                logger.info("[APLR] 那天的记录是空的呢，没什么好总结的呀~")
-                return
-        except Exception as e:
-            logger.info(f"[APLR] 读取记录的时候出了点小状况：{e}")
-            return
-
-        # 将对话转换为文本
+        # 寻找聊天记录文件并合并
         conversation_text = ""
-        for msg in conversations:
-            timestamp = msg.get('timestamp', '')
-            role = msg.get('role', 'unknown')
-            content = msg.get('content', '')
-            conversation_text += f"[{timestamp}] {role}: {content}\n"
+        found_any = False
+        
+        for target_user_id in self.target_user_id_list:
+            dialog_file = self.dialog_folder / f"{date_str}_dialog_{target_user_id}.json"
+            if not dialog_file.exists():
+                # 如果没找到，尝试提取一次（可能是补录历史记录）
+                try:
+                    core_db_path = Path.cwd() / "data" / "data_v4.db"
+                    clean_dialogue_with_different_limits(
+                        db_path=core_db_path,
+                        output_dir=self.dialog_folder,
+                        username=self.username,
+                        ai_name=self.ai_name,
+                        platform="AstrBot",
+                        target_date=date_str,
+                        target_user_id=target_user_id
+                    )
+                except Exception as e:
+                    logger.error(f"提取聊天记录失败: {e}")
+                
+                # 提取后再检查一次
+                if not dialog_file.exists():
+                    logger.info(f"[APLR] 没找到 {date_str} ({target_user_id}) 的聊天记录")
+                    continue
+
+            # 读取聊天记录
+            try:
+                with open(dialog_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                conversations = data.get("conversations", [])
+                if conversations:
+                    found_any = True
+                    conversation_text += f"\n=== 对话记录 ({target_user_id}) ===\n"
+                    for msg in conversations:
+                        timestamp = msg.get('timestamp', '')
+                        role = msg.get('role', 'unknown')
+                        content = msg.get('content', '')
+                        conversation_text += f"[{timestamp}] {role}: {content}\n"
+            except Exception as e:
+                logger.info(f"[APLR] 读取记录 ({target_user_id}) 的时候出了点小状况：{e}")
+
+        if not found_any:
+            logger.info(f"[APLR] 没找到 {date_str} 的任何聊天记录，是不是那天没说话呀？")
+            return
 
         logger.info(f"[APLR] 正在总结 {date_str} 的点点滴滴，稍等一下哦...")
         
