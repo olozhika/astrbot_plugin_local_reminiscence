@@ -121,7 +121,7 @@ To use this plugin, you must perform the first three steps!
 
 使用范例如下（第一句这对吗？？？）
 ![人不能什么事情都跟AI说](./人不能什么事情都跟拥有长期记忆的AI说.png)
-图名: 人不能什么事情都跟拥有长期记忆的AI说.png
+*图名: 人不能什么事情都跟拥有长期记忆的AI说.png*
 
 ---
 
