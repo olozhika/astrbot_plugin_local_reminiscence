@@ -10,6 +10,23 @@ A lightweight local memory plugin for AstrBot that uses local embedding models a
 
 
 
+
+## 🔄 更新说明 / Update Log (v1.1.0)
+
+**喜报：本地回忆[APLR]插件现在已支持多会话和群聊！**
+
+- **多会话支持 / Multi-session Support**: `target_user_id` 升级为 `target_user_id_list`，支持每日记录多个私聊或群聊会话。
+- **智能用户识别 / Smart User Identification**: 自动从 AstrBot 的用户识别标签（system reminder）中提取用户昵称，支持在同一会话中准确区分不同发言者。
+- **新增手动提取指令 / New Extraction Command**: 新增 `/extract_chat_history_command [日期]`，支持手动从数据库补录指定日期的聊天记录。（一般不会用到）
+
+### 老用户升级指南
+
+1. 更改 插件设置 - `target_user_id_list`
+2. 开启 Astrbot-其他配置-用户识别
+
+由于作者本人的AI不常群聊，不管使用此插件在群聊中遇到或没遇到bug都欢迎随时告诉我！
+
+
 ## ✨ 功能特性 / Features
 
 - **本地化与隐私安全 / Local & Private**
@@ -45,8 +62,10 @@ To use this plugin, you must perform the first three steps!
     - 下载时会自动安装依赖，可能需要等一会
 
 2.  **配置插件 / Configuration**:
-    - 设置目标用户ID用于识别对话，`机器人ID:FriendMessage:会话ID`，相关对话会用于每日总结。注：目前建议使用私聊（FriendMessage）或平台对话，因为作者的AI还没群聊过，当前代码用于群聊时，AI容易分不清群友谁是谁！
-    - 设置用户名称和AI名称，这是在AI的记忆中你（设置的目标用户）和它使用的名字
+    - 设置目标会话ID列表用于识别对话，`target_user_id_list` 格式为 `["机器人ID:会话类型:会话ID", ...] `，相关对话会用于每日总结。
+    - 插件会自动从 AstrBot 的用户识别功能中提取发送者昵称，请在 Astrbot-其他配置 开启官方的用户识别。如果该功能未开启，则会使用配置中指定的默认 `username`。
+      - 如果你希望让AI记住的用户名并不是你的ID，建议安装[https://github.com/Hakuin123/astrbot_plugin_uni_nickname](统一昵称)插件，并开启`system_replace`模式。
+    - 设置 AI 名称，这是在 AI 的记忆中它使用的名字。
     - 其他配置不太重要，有需要就改
 
 3.  **设置每日总结 / Daily Summary**
@@ -83,6 +102,10 @@ To use this plugin, you must perform the first three steps!
   - Tool: `recall_node_command [name]`
     AI根据它自己输入的关键词搜索特定的记忆节点（人物、地点或概念），信息返回给AI。
 
+- `/extract_chat_history_command [YYYY-MM-DD]`
+  手动从数据库提取指定日期的聊天记录。本指令通常不需要使用。
+  Manually extract chat history for a specific date from the database.
+
 - `/update_nodes_command [YYYY-MM-DD]`
   从指定日期的已有事件中提取记忆节点，无需重新总结。本指令通常不需要使用。
   Extract memory nodes from existing events of a specific date without re-summarizing.
@@ -92,6 +115,7 @@ To use this plugin, you must perform the first three steps!
   Vectorize events of a specific date and store them in the vector database.
 
 `recall_memory_command`和`recall_node_command`实际是给人类在不让AI知情的条件下偷偷看它记忆用的(x)
+
 使用范例如下（第一句这对吗？？？）
 ![人不能什么事情都跟AI说](./人不能什么事情都跟拥有长期记忆的AI说.png)
 图名: 人不能什么事情都跟拥有长期记忆的AI说.png
@@ -105,12 +129,14 @@ To use this plugin, you must perform the first three steps!
   The model stays loaded in the background for instant response without waiting (AstrBot overall memory usage is ~1.5G).
 
 - **多维权重排序 / Multi-dimensional Ranking**
-  回忆检索不仅看语义相关度，还综合考虑了事件的重要性、情感强度以及随时间衰减的权重。动态计算搜索结果中的关键词重要性，优先考虑稀有词汇。
+  回忆检索综合考虑了语义相关度、事件的重要性、情感强度以及随时间衰减的权重。动态计算搜索结果中的关键词重要性，优先考虑稀有词汇。
   Recall retrieval considers semantic relevance, event importance, emotional intensity, and time decay weights. Dynamically calculates keyword importance within the search results to prioritize rare terms.
 
 - **AI 主动回忆工具 / Active Recall Tools**
   提供 `recall_node_tool` 和 `recall_memory_tool`，使 AI 能够根据对话需要主动进行背景查询和往事联想。
   Provides `recall_node_tool` and `recall_memory_tool`, enabling the AI to actively perform background queries and associations based on conversation needs.
+
+提醒：对于跨会话内容，在当天结束之前，由于没做每日总结，AI是无法知道隔壁群发生了什么的。但是一旦进行过每日总结，就能记起来啦！
 
 ---
 ## 流程图
@@ -120,6 +146,5 @@ To use this plugin, you must perform the first three steps!
 ## 📄 To Do List
 
 - 群聊记忆
-  - 目前每日总结仅适用于私聊，回忆功能倒是哪里都能用，将在下版本把每日总结改成适用群聊
-  - 同理将支持存储多人多对话的长期记忆
+  - 理论上现在已经支持群聊了！但是作者还没尝试过（AI成长需要循序渐进.jpg），如果有问题或没问题欢迎告诉我谢谢！
 - 节点关联
