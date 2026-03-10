@@ -70,6 +70,11 @@ def clean_dialogue_with_different_limits(
         match = re.search(r'Current datetime:\s*([0-9:\-\sT]+)\s*\(.*?\)', text)
         return match.group(1).strip() if match else None
 
+    def extract_nickname(text):
+        """从 <system_reminder> 中提取 Nickname"""
+        match = re.search(r'<system_reminder>.*?Nickname:\s*([^,\n\s]+)', text, re.IGNORECASE)
+        return match.group(1).strip() if match else None
+
     for row in rows:
         row_content = decode_json_unicode(row['content'])
         if not isinstance(row_content, list): continue
@@ -81,6 +86,7 @@ def clean_dialogue_with_different_limits(
             if not role or not contents: continue
 
             text_messages = []
+            turn_nickname = None
             if isinstance(contents, list):
                 for block in contents:
                     if isinstance(block, str):
@@ -90,6 +96,12 @@ def clean_dialogue_with_different_limits(
                         ts = extract_timestamp(text)
                         if ts:
                             timestamp = ts
+                        
+                        nick = extract_nickname(text)
+                        if nick:
+                            turn_nickname = nick
+                        
+                        if ts or nick:
                             continue
                         text_messages.append(text)
             elif isinstance(contents, str):
@@ -104,12 +116,14 @@ def clean_dialogue_with_different_limits(
             if target_date and date_key != target_date:
                 continue
 
+            current_username = turn_nickname if turn_nickname else username
+
             if role == "user":
                 if len(final_text) <= max_user_chars:
-                    daily_txt[date_key].append(f"[{timestamp}] {username}: {final_text}")
+                    daily_txt[date_key].append(f"[{timestamp}] {current_username}: {final_text}")
                     daily_json[date_key].append({
                         "timestamp": timestamp,
-                        "role": username,
+                        "role": current_username,
                         "content": final_text
                     })
             elif role == "assistant":
@@ -125,8 +139,10 @@ def clean_dialogue_with_different_limits(
     for date_key, messages in daily_json.items():
         if not messages:
             continue
-        output_txt = output_dir / f"{date_key}_dialog.txt"
-        output_json = output_dir / f"{date_key}_dialog.json"
+        
+        suffix = f"_{target_user_id}" if target_user_id else ""
+        output_txt = output_dir / f"{date_key}_dialog{suffix}.txt"
+        output_json = output_dir / f"{date_key}_dialog{suffix}.json"
 
         with open(output_txt, "w", encoding="utf-8") as f:
             f.write("\n".join(daily_txt[date_key]))
