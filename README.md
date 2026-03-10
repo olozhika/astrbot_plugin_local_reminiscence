@@ -73,7 +73,10 @@ To use this plugin, you must perform the first three steps!
     - 手动触发方式：每天晚上关机前在AI聊天框输入 /daily_summary_command YYYY-MM-DD (此处日期是今日日期)
     - 上面两种方式二选一
 
-4.  [可选] **系统prompt额外提醒 / Add in system_prompt**
+4.  [可选] **向记忆数据库中导入过往聊天记录**
+    - 使用指令`/daily_summary_command [YYYY-MM-DD]` 依次补录相应日期记忆。所以即使你刚刚下载本插件，但已经和一个AI聊了很长时间（而且没删Astrbot中的对话数据），你可以用此指令把它们统统依次补录！该指令会自动找到全部该日聊天记录，进行整理总结，向量化重要事件，并更新记忆节点。
+
+6.  [可选] **系统prompt额外提醒 / Add in system_prompt**
     - 如果你的AI平时傻傻的想不起来调用工具，可以考虑在人设文本里加一句“你可以使用recall_memory_tool工具回忆与输入文本相关的记忆，可以使用recall_node_tool工具回忆特定概念”
     - 如果你的AI很聪明，或者不需要它经常调用工具就不用啦，本插件本来也有自动回忆功能的！
 
