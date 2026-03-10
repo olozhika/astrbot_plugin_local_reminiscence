@@ -18,7 +18,7 @@ from .vector_db import VectorDB
 from .chat_history_extract import clean_dialogue_with_different_limits
 import random
 
-@register("local_reminiscence", "olozhika", "本地记忆插件，包含每日总结工具", "1.0.0")
+@register("local_reminiscence", "olozhika", "本地记忆插件，包含每日总结工具", "1.1.0")
 class LocalReminiscencePlugin(Star):
     def __init__(self, context: Context, config: any = None):
         super().__init__(context)
