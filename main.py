@@ -177,7 +177,7 @@ class LocalReminiscencePlugin(Star):
                             selected_events.extend(random.sample(remaining, min(len(remaining), m2)))
                         
                         if selected_events:
-                            recall_text = "\n\n【自动回想 - 基于你当前的话题，你回想起了以下片段】\n"
+                            recall_text = "\n\n【自动回想 - 基于当前的话题，你回想起了以下片段】\n"
                             for ev in selected_events:
                                 recall_text += f"📅 {ev['date']}\n"
                                 recall_text += f"📍 {ev['narrative']}\n"
