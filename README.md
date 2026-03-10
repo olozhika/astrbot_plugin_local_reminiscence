@@ -116,7 +116,7 @@ To use this plugin, you must perform the first three steps!
 - `/vectorize_events [YYYY-MM-DD]`
   将指定日期的事件向量化并存入向量数据库。本指令通常不需要使用。
   Vectorize events of a specific date and store them in the vector database.
-
+---
 `recall_memory_command`和`recall_node_command`实际是给人类在不让AI知情的条件下偷偷看它记忆用的(x)
 
 使用范例如下（第一句这对吗？？？）
