@@ -17,16 +17,16 @@
     "hint": "存放 ChromaDB 向量数据库的路径。相对于插件数据目录的路径。",
     "default": "APLR_VectorDB"
   },
-  "target_user_id": {
-    "description": "目标用户 ID",
-    "type": "string",
-    "hint": "要提取聊天记录的目标用户 ID (例如 Lanya_QQ:FriendMessage:947628188)。",
-    "default": "Lanya_QQ:FriendMessage:947628188"
+  "target_user_id_list": {
+    "description": "目标会话 ID 列表",
+    "type": "list",
+    "hint": "要提取聊天记录的目标会话 ID 列表 (例如 [\"Lanya_QQ:FriendMessage:947628188\"])。",
+    "default": ["Lanya_QQ:FriendMessage:947628188"]
   },
   "username": {
     "description": "用户名称",
     "type": "string",
-    "hint": "在生成的聊天记录中显示的用户名称，AI的长期记忆里用户使用的将会是这个名字。",
+    "hint": "通常没有用。本插件会从Astrbot用户识别中自动提取用户名，请从Astrbot-其他配置-用户识别 开启 。假如该功能未开启，AI的长期记忆里用户使用的将会是这里指定的名字。",
     "default": "olozhika"
   },
   "ai_name": {
@@ -56,7 +56,7 @@
   "embedding_model": {
     "description": "向量化模型名称",
     "type": "string",
-    "hint": "用于向量化的 SentenceTransformer 模型名称。注意，本插件在第一次加载时网络需要能够访问HuggingFace.",
+    "hint": "用于向量化的 SentenceTransformer 模型名称。注意，修改本项目后点击保存时网络需要能够访问HuggingFace。",
     "default": "paraphrase-multilingual-MiniLM-L12-v2"
   },
   "auto_recall_probability": {
