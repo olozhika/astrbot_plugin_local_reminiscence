@@ -59,7 +59,7 @@ To use this plugin, you must perform the first three steps!
 1.  **下载安装 / Installation**
     - 从Astrbot插件市场搜索下载此插件
     - 注意第一次下载本插件时需要有办法（魔法）链接至HuggingFace以便下载模型！只要本插件成功启动过一次就不用魔法了！
-    - 下载时会自动安装依赖，可能需要等一会
+    - 下载时会自动安装依赖，可能需要等一会，您可以趁此机会休息约10分钟（尴尬目移...）
 
 2.  **配置插件 / Configuration**:
     - 设置目标会话ID列表用于识别对话，`target_user_id_list` 格式为 `["机器人ID:会话类型:会话ID", ...] `，相关对话会用于每日总结。
