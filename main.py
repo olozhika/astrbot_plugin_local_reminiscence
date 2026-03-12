@@ -18,7 +18,7 @@ from .vector_db import VectorDB
 from .chat_history_extract import clean_dialogue_with_different_limits
 import random
 
-@register("local_reminiscence", "olozhika", "本地记忆插件，包含每日总结工具", "1.1.0")
+@register("local_reminiscence", "olozhika", "本地记忆插件，包含每日总结工具", "1.1.1")
 class LocalReminiscencePlugin(Star):
     def __init__(self, context: Context, config: any = None):
         super().__init__(context)
@@ -136,12 +136,39 @@ class LocalReminiscencePlugin(Star):
                     req.system_prompt += memory_text
                     logger.info(f"[APLR] 检测到新对话开启，已为会话注入历史记忆，长度: {len(memory_text)}")
 
-            # 0. 自动注入相关记忆节点背景
-            node_context, node_names = await self._get_nodes_context(message_str)
-            if node_context:
-                injection_text = f"\n\n【记忆节点背景 - 这是你对提及实体的已知认知】\n{node_context}\n"
+            # 0. 提取当前用户的 Nickname
+            nickname_match = re.search(r'<system_reminder>.*?Nickname:\s*([^,\n\s]+)', message_str, re.IGNORECASE)
+            current_nickname = nickname_match.group(1).strip() if nickname_match else self.username
+            
+            # 1. 获取所有相关节点
+            all_nodes = []
+            seen_names = set()
+            
+            # 首先尝试获取用户本人节点
+            if current_nickname:
+                user_nodes = self.db.search_nodes(current_nickname, limit=1, include_description=False)
+                if user_nodes:
+                    node = user_nodes[0]
+                    node['is_user'] = True # 标记为当前聊天对象
+                    all_nodes.append(node)
+                    seen_names.add(node['name'])
+
+            # 获取消息相关的节点
+            msg_nodes, _ = await self._get_nodes_context(message_str, include_description=False)
+            for node in msg_nodes:
+                if node['name'] not in seen_names:
+                    all_nodes.append(node)
+                    seen_names.add(node['name'])
+
+            if all_nodes:
+                context_parts = []
+                for n in all_nodes:
+                    suffix = " (这是当前的聊天对象)" if n.get('is_user') else ""
+                    context_parts.append(f"📌 {n['name']}{suffix}，{n['description']}")
+                
+                injection_text = f"\n\n【记忆节点背景 - 这是你对提及实体及当前聊天对象的已知认知】\n" + "\n\n".join(context_parts) + "\n"
                 req.system_prompt += injection_text
-                logger.info(f"[APLR] 自动注入了 {len(node_names)} 个记忆节点: {', '.join(node_names)}")
+                logger.info(f"[APLR] 自动注入了 {len(all_nodes)} 个记忆节点: {', '.join([n['name'] for n in all_nodes])}")
 
             # 0. 自动触发记忆检索 (语义匹配) - 放在新会话注入后面，且非新会话也会触发
             keywords = ["之前", "记得", "回忆", "想起", "以前", "过去"]
@@ -177,7 +204,7 @@ class LocalReminiscencePlugin(Star):
                             selected_events.extend(random.sample(remaining, min(len(remaining), m2)))
                         
                         if selected_events:
-                            recall_text = "\n\n【自动回想 - 基于当前的话题，你回想起了以下片段】\n"
+                            recall_text = "\n\n【自动回想 - 基于你当前的话题，你回想起了以下片段】\n"
                             for ev in selected_events:
                                 recall_text += f"📅 {ev['date']}\n"
                                 recall_text += f"📍 {ev['narrative']}\n"
@@ -191,35 +218,41 @@ class LocalReminiscencePlugin(Star):
         except Exception as e:
             logger.error(f"[APLR] 注入历史记忆失败: {e}", exc_info=True)
 
-    async def _get_nodes_context(self, text: str) -> tuple[str, list[str]]:
-        """根据文本提取关键词并获取相关记忆节点的背景信息"""
+    async def _get_nodes_context(self, text: str, include_description: bool = False, max_nodes: int = 8) -> tuple[list[dict], list[str]]:
+        """根据文本提取关键词并获取相关记忆节点对象"""
         try:
             # 提取关键词
             keywords = jieba.analyse.extract_tags(text, topK=15)
             if not keywords:
-                return "", []
+                return [], []
             
             # 搜索节点
             nodes = []
+            seen_names = set()
+            
             for kw in keywords:
-                node = self.db.search_node_by_name(kw)
-                if node and node not in nodes:
-                    nodes.append(node)
+                if len(nodes) >= max_nodes:
+                    break
+                    
+                is_common_name = (kw.lower() in [self.username.lower(), self.ai_name.lower()])
+                
+                if is_common_name:
+                    found_nodes = self.db.get_nodes_by_names([kw])
+                else:
+                    found_nodes = self.db.search_nodes(kw, limit=2, include_description=include_description)
+                
+                for node in found_nodes:
+                    if node['name'] not in seen_names:
+                        nodes.append(node)
+                        seen_names.add(node['name'])
+                        if len(nodes) >= max_nodes:
+                            break
             
-            if not nodes:
-                return "", []
-            
-            context_parts = []
-            node_names = []
-            for n in nodes:
-                # 使用更显眼的结构化格式，确保 AI 建立强关联
-                context_parts.append(f"📌 {n['name']}，{n['description']}")
-                node_names.append(n['name'])
-            
-            return "\n\n".join(context_parts), node_names
+            node_names = [n['name'] for n in nodes]
+            return nodes, node_names
         except Exception as e:
             logger.error(f"获取节点背景失败: {e}")
-            return "", []
+            return [], []
 
     @filter.command("daily_summary_command")
     async def daily_summary_command(self, event: AstrMessageEvent):
@@ -332,14 +365,23 @@ class LocalReminiscencePlugin(Star):
                 base_user_prompt=self.config.get("user_prompts", "")
             )
 
-            # 获取现有节点背景
-            existing_nodes_context, _ = await self._get_nodes_context("\n".join([e['narrative'] for e in events]))
+            # 获取现有节点背景 (提取节点时也放宽上限，允许描述匹配)
+            nodes_objs, _ = await self._get_nodes_context("\n".join([e['narrative'] for e in events]), include_description=True, max_nodes=100)
+            existing_nodes_context = ""
+            if nodes_objs:
+                existing_nodes_context = "\n".join([f"- {n['name']}: {n['description']}" for n in nodes_objs])
 
-            nodes = await summarizer.extract_nodes_from_events(events, date_str, existing_nodes_context=existing_nodes_context)
-            if nodes:
-                self.db.update_nodes(nodes)
+            nodes_result = await summarizer.extract_nodes_from_events(events, date_str, existing_nodes_context=existing_nodes_context)
+            if nodes_result:
+                nodes, deleted_nodes = nodes_result
+                if nodes:
+                    self.db.update_nodes(nodes)
+                if deleted_nodes:
+                    self.db.delete_nodes(deleted_nodes)
+                
                 node_names = [n.name for n in nodes]
-                yield event.plain_result(f"✅ 已成功更新 {len(nodes)} 个记忆节点：{', '.join(node_names)}")
+                del_msg = f"，并删除了 {len(deleted_nodes)} 个冗余节点" if deleted_nodes else ""
+                yield event.plain_result(f"✅ 已成功更新 {len(nodes)} 个记忆节点：{', '.join(node_names)}{del_msg}")
             else:
                 yield event.plain_result(f"⚠️ 未能从 {date_str} 的事件中提取到新的记忆节点。")
         except Exception as e:
@@ -392,12 +434,14 @@ class LocalReminiscencePlugin(Star):
             yield event.plain_result("请输入要搜索的节点名称。")
             return
         
-        node = self.db.search_node_by_name(query)
-        if node:
-            resp = f"💡 找到了关于“{node['name']}”的记忆节点：\n\n"
-            resp += f"🏷️ 类型: {node['type']}\n"
-            resp += f"📝 描述: {node['description']}\n"
-            resp += f"🕒 最后更新: {node['last_updated']}\n"
+        nodes = self.db.search_nodes(query)
+        if nodes:
+            resp = f"💡 找到了 {len(nodes)} 个相关的记忆节点：\n\n"
+            for node in nodes:
+                resp += f"📌 **{node['name']}** ({node['type']})\n"
+                resp += f"📝 描述: {node['description']}\n"
+                resp += f"🕒 最后更新: {node['last_updated']}\n"
+                resp += "\n"
             yield event.plain_result(resp)
         else:
             yield event.plain_result(f"暂时没有关于“{query}”的节点记忆呢。")
@@ -409,9 +453,12 @@ class LocalReminiscencePlugin(Star):
         Args:
             name(string): 要搜索的节点名称。
         """
-        node = self.db.search_node_by_name(name)
-        if node:
-            return f"关于 {node['name']} ({node['type']}) 的背景信息：{node['description']} (最后更新于 {node['last_updated']})"
+        nodes = self.db.search_nodes(name)
+        if nodes:
+            res = f"找到以下关于 {name} 的相关节点信息：\n"
+            for node in nodes:
+                res += f"- {node['name']} ({node['type']}): {node['description']} (最后更新于 {node['last_updated']})\n"
+            return res
         return f"未找到关于 {name} 的节点信息。"
 
     async def _get_memory_retrieval_text(self, query: str, count: int = None) -> str:
@@ -675,8 +722,11 @@ class LocalReminiscencePlugin(Star):
                 base_user_prompt=base_user_prompt
             )
 
-            # 获取现有节点背景
-            existing_nodes_context, _ = await self._get_nodes_context(conversation_text)
+            # 获取现有节点背景 (总结时放宽上限，允许描述匹配)
+            nodes, _ = await self._get_nodes_context(conversation_text, include_description=True, max_nodes=100)
+            existing_nodes_context = ""
+            if nodes:
+                existing_nodes_context = "\n".join([f"- {n['name']}: {n['description']}" for n in nodes])
 
             # 5. 异步调用总结生成
             summary = await summarizer.generate_summary(conversation_text, date_str, existing_nodes_context=existing_nodes_context)
