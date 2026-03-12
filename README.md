@@ -13,6 +13,7 @@ A lightweight local memory plugin for AstrBot that uses local embedding models a
 
 1. 优化了接收消息自动唤起回忆时的搜索记忆节点算法
 2. 优化了聊天记录导出函数，现在Cron Job和send_message_to_user的发言也能被记录
+3. 优化每日总结的记忆节点更新过程：现在AI会自动合并、删除冗余节点
 
 ## 🔄 更新说明 / Update Log (v1.1.0)
 
