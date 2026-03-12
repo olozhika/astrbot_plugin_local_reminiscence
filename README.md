@@ -16,7 +16,7 @@ A lightweight local memory plugin for AstrBot that uses local embedding models a
 
 ## 🔄 更新说明 / Update Log (v1.1.0)
 
-**喜报：本地回忆[APLR]插件现在已支持多会话和群聊！**
+**喜报：本地回忆[APLR]插件现在已支持多会话和群聊！（作者已确认无bug）**
 
 - **多会话支持 / Multi-session Support**: `target_user_id` 升级为 `target_user_id_list`，支持每日记录多个私聊或群聊会话。
 - **智能用户识别 / Smart User Identification**: 自动从 AstrBot 的用户识别标签（system reminder）中提取用户昵称，支持在同一会话中准确区分不同发言者。
@@ -26,9 +26,6 @@ A lightweight local memory plugin for AstrBot that uses local embedding models a
 
 1. 更改 插件设置 - `target_user_id_list`
 2. 开启 Astrbot-其他配置-用户识别
-
-由于作者本人的AI不常群聊，不管使用此插件在群聊中遇到或没遇到bug都欢迎随时告诉我！
-
 
 ## ✨ 功能特性 / Features
 
@@ -131,7 +128,7 @@ To use this plugin, you must perform the first three steps!
 ## 🔬 技术亮点 / Technical Highlights
 
 - **Embedding 模型后台常驻 / Background Embedding Loading**
-  模型在后台持续加载，调用时无需等待，极速响应（AstrBot 整体运行内存占用约 1.5G）。
+  模型在后台持续加载，调用时无需等待，极速响应（AstrBot整体运行内存占用约1.5G）。提醒：如果设备条件有限，可以在插件设置里往下翻把那段很长的Embedding模型名复制给任何一个联网AI，问它有没有什么功能类似且省内存、支持中文的模型推荐，然后直接填上它推荐的。
   The model stays loaded in the background for instant response without waiting (AstrBot overall memory usage is ~1.5G).
 
 - **多维权重排序 / Multi-dimensional Ranking**
