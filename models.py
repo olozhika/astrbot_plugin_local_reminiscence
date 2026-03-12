@@ -18,4 +18,5 @@ class DailySummary(BaseModel):
     date: str = Field(description="日期 YYYY-MM-DD")
     events: List[Event] = Field(description="事件列表")
     nodes: List[MemoryNode] = Field(description="从今日对话中提取或更新的记忆节点（实体/概念）")
+    deleted_nodes: List[str] = Field(default_factory=list, description="需要删除或合并的冗余节点名称列表（如：已被更精确节点替代的旧节点）")
     daily_reflection: str = Field(description="{ai_name}的自由总结/心得")
