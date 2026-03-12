@@ -9,14 +9,12 @@ A lightweight local memory plugin for AstrBot that uses local embedding models a
 (另：如果你想把这个插件改成适配其他平台的插件，应该只要改main.py就好了)
 
 
-
-
-## 🔄 更新说明 / Update Log (v1.1.0)
-
 ## 🔄 小更新说明 (v1.1.1)
 
 1. 优化了接收消息自动唤起回忆时的搜索记忆节点算法
 2. 优化了聊天记录导出函数，现在Cron Job和send_message_to_user的发言也能被记录
+
+## 🔄 更新说明 / Update Log (v1.1.0)
 
 **喜报：本地回忆[APLR]插件现在已支持多会话和群聊！**
 
