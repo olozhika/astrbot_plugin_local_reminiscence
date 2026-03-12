@@ -63,10 +63,11 @@ To use this plugin, you must perform the first three steps!
     - 下载时会自动安装依赖，可能需要等一会，您可以趁此机会休息约10分钟（尴尬目移...）
 
 2.  **配置插件 / Configuration**:
-    - 设置目标会话ID列表用于识别对话，`target_user_id_list` 格式为 `["机器人ID:会话类型:会话ID", ...] `，相关对话会用于每日总结。
-    - 插件会自动从 AstrBot 的用户识别功能中提取发送者昵称，请在 Astrbot-其他配置 开启官方的用户识别。如果该功能未开启，则会使用配置中指定的默认 `username`。
-      - 如果你希望让AI记住的用户名并不是你的ID，建议安装[统一昵称](https://github.com/Hakuin123/astrbot_plugin_uni_nickname)插件，并开启`system_replace`模式。
-    - 设置 AI 名称，这是在 AI 的记忆中它使用的名字。
+    - 设置目标会话ID列表用于识别对话，`target_user_id_list` 格式为 `["机器人ID:会话类型:会话ID", ...]`，相关对话会用于每日总结
+      - 这个格式也就是 Astrbot-更多功能-对话数据-消息对话来源 的三项内容，群聊会话类型为 GroupMessage，私聊为 FriendMessage
+    - 插件会自动从 AstrBot 的用户识别功能中提取发送者昵称，请在 Astrbot-其他配置 开启官方的用户识别。如果该功能未开启，则会使用配置中指定的默认 `username`
+      - 如果你希望让AI记住的用户名并不是你的ID，建议安装[统一昵称](https://github.com/Hakuin123/astrbot_plugin_uni_nickname)插件，并开启`system_replace`模式
+    - 设置 AI 名称，这是在 AI 的记忆中它使用的名字
     - 其他配置不太重要，有需要就改
 
 3.  **设置每日总结 / Daily Summary**
