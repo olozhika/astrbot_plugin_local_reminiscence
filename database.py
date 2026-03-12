@@ -87,6 +87,16 @@ class MemoryDB:
                 """, (node.name, node.type, node.description))
             conn.commit()
 
+    def delete_nodes(self, names: List[str]):
+        """删除指定的记忆节点"""
+        if not names:
+            return
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            placeholders = ','.join(['?'] * len(names))
+            cursor.execute(f"DELETE FROM nodes WHERE name IN ({placeholders})", names)
+            conn.commit()
+
     def insert_summary(self, summary: DailySummary):
         with self._get_conn() as conn:
             cursor = conn.cursor()
@@ -107,6 +117,11 @@ class MemoryDB:
                             description = excluded.description,
                             last_updated = CURRENT_TIMESTAMP
                     """, (node.name, node.type, node.description))
+
+            # 删除冗余节点
+            if hasattr(summary, 'deleted_nodes') and summary.deleted_nodes:
+                placeholders = ','.join(['?'] * len(summary.deleted_nodes))
+                cursor.execute(f"DELETE FROM nodes WHERE name IN ({placeholders})", summary.deleted_nodes)
 
             for event in summary.events:
                 cursor.execute("""
@@ -208,22 +223,45 @@ class MemoryDB:
         with self._get_conn() as conn:
             cursor = conn.cursor()
             placeholders = ','.join(['?'] * len(names))
-            cursor.execute(f"SELECT * FROM nodes WHERE name IN ({placeholders})", names)
+            # 使用 LOWER() 实现不区分大小写匹配
+            lower_names = [n.lower() for n in names]
+            cursor.execute(f"SELECT * FROM nodes WHERE LOWER(name) IN ({placeholders})", lower_names)
             return [dict(row) for row in cursor.fetchall()]
 
-    def search_node_by_name(self, name: str) -> dict | None:
-        """精确或模糊搜索单个节点"""
+    def search_nodes(self, query: str, limit: int = 3, include_description: bool = True) -> List[dict]:
+        """模糊搜索节点，匹配名称或描述。优先匹配名称，其次匹配描述。"""
         with self._get_conn() as conn:
             cursor = conn.cursor()
-            # 先尝试精确匹配
-            cursor.execute("SELECT * FROM nodes WHERE name = ?", (name,))
-            row = cursor.fetchone()
-            if row:
-                return dict(row)
+            # 搜索名称或描述中包含关键词的节点
+            # 排序逻辑：
+            # 1. 名称完全一致 (0)
+            # 2. 名称以关键词开头 (1)
+            # 3. 名称包含关键词 (2)
+            # 4. 描述包含关键词 (3)
+            # 5. 最后按更新时间排序
             
-            # 再尝试模糊匹配
-            cursor.execute("SELECT * FROM nodes WHERE name LIKE ?", (f"%{name}%",))
-            row = cursor.fetchone()
-            if row:
-                return dict(row)
-        return None
+            lower_query = query.lower()
+            where_clause = "LOWER(name) LIKE ?"
+            params = [f"%{lower_query}%"]
+            
+            if include_description:
+                where_clause += " OR LOWER(description) LIKE ?"
+                params.append(f"%{lower_query}%")
+                
+            # 添加排序参数
+            params.extend([lower_query, f"{lower_query}%", f"%{lower_query}%", limit])
+            
+            cursor.execute(f"""
+                SELECT * FROM nodes 
+                WHERE {where_clause}
+                ORDER BY (
+                    CASE 
+                        WHEN LOWER(name) = ? THEN 0
+                        WHEN LOWER(name) LIKE ? THEN 1
+                        WHEN LOWER(name) LIKE ? THEN 2
+                        ELSE 3
+                    END
+                ), last_updated DESC
+                LIMIT ?
+            """, tuple(params))
+            return [dict(row) for row in cursor.fetchall()]
