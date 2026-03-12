@@ -29,7 +29,7 @@ def clean_dialogue_with_different_limits(
         username="olozhika",
         ai_name="Lanya",
         max_user_chars=1000, 
-        max_assistant_chars=1000,
+        max_assistant_chars=2000,
         platform="AstrBot",
         target_date=None,
         target_user_id=None
@@ -67,47 +67,107 @@ def clean_dialogue_with_different_limits(
     daily_json = defaultdict(list)
 
     def extract_timestamp(text):
+        if not text: return None
+        # 匹配 <system_reminder> 中的格式: Current datetime: 2026-03-12 17:36 (CST)
         match = re.search(r'Current datetime:\s*([0-9:\-\sT]+)\s*\(.*?\)', text)
-        return match.group(1).strip() if match else None
+        if match:
+            return match.group(1).strip()
+        # 匹配 CronJob 中的格式: triggered at 2026-03-12T09:30:00.003831+00:00
+        match = re.search(r'triggered at\s*([0-9:\-\sT\.\+]+)', text)
+        if match:
+            return match.group(1).strip()
+        return None
 
     def extract_nickname(text):
         """从 <system_reminder> 中提取 Nickname"""
+        if not text: return None
         match = re.search(r'<system_reminder>.*?Nickname:\s*([^,\n\s]+)', text, re.IGNORECASE)
         return match.group(1).strip() if match else None
+
+    def is_metadata_block(text):
+        """判断是否为纯元数据块（如 system_reminder）"""
+        return "<system_reminder>" in text
 
     for row in rows:
         row_content = decode_json_unicode(row['content'])
         if not isinstance(row_content, list): continue
         
-        timestamp = None
+        # 预检：为这一行（一个会话上下文）寻找第一个可用的时间戳作为初始值
+        initial_timestamp = None
+        for turn in row_content:
+            cs = turn.get("content")
+            if isinstance(cs, list):
+                for b in cs:
+                    t = b.get("text", "") if isinstance(b, dict) else str(b)
+                    initial_timestamp = extract_timestamp(t)
+                    if initial_timestamp: break
+            elif isinstance(cs, str):
+                initial_timestamp = extract_timestamp(cs)
+            if initial_timestamp: break
+        
+        timestamp = initial_timestamp
         for turn in row_content:
             role = turn.get("role")
             contents = turn.get("content")
-            if not role or not contents: continue
+            tool_calls = turn.get("tool_calls")
+            
+            if not role: continue
+            # 如果 content 为空且没有 tool_calls，则跳过
+            if contents is None and not tool_calls: continue
 
             text_messages = []
             turn_nickname = None
+
+            def process_content_item(item):
+                nonlocal timestamp, turn_nickname
+                if isinstance(item, str):
+                    text = item
+                elif isinstance(item, dict) and item.get("type") in ["text", "plain"]:
+                    text = item.get("text", "")
+                else:
+                    return
+
+                ts = extract_timestamp(text)
+                if ts:
+                    timestamp = ts
+                
+                nick = extract_nickname(text)
+                if nick:
+                    turn_nickname = nick
+                
+                if not is_metadata_block(text):
+                    # 处理 CronJob 文本，只保留结果部分
+                    marker = "I finished this job, here is the result:"
+                    if marker in text:
+                        text = text.split(marker, 1)[1]
+                    text_messages.append(text.strip())
+
+            def process_tool_calls(calls):
+                if not isinstance(calls, list): return
+                for call in calls:
+                    func = call.get("function", {})
+                    if func.get("name") == "send_message_to_user":
+                        args_str = func.get("arguments", "{}")
+                        try:
+                            # 解析工具调用的参数字符串，json.loads 会处理 unicode 转义
+                            args = json.loads(args_str)
+                            msgs = args.get("messages", [])
+                            if isinstance(msgs, list):
+                                for m in msgs:
+                                    process_content_item(m)
+                        except Exception:
+                            pass
+
             if isinstance(contents, list):
                 for block in contents:
-                    if isinstance(block, str):
-                        text_messages.append(block)
-                    elif isinstance(block, dict) and block.get("type") == "text":
-                        text = block.get("text", "").strip()
-                        ts = extract_timestamp(text)
-                        if ts:
-                            timestamp = ts
-                        
-                        nick = extract_nickname(text)
-                        if nick:
-                            turn_nickname = nick
-                        
-                        if ts or nick:
-                            continue
-                        text_messages.append(text)
+                    process_content_item(block)
             elif isinstance(contents, str):
-                text_messages.append(contents)
+                process_content_item(contents)
+            
+            if tool_calls:
+                process_tool_calls(tool_calls)
 
-            final_text = " ".join(text_messages).strip()
+            final_text = "\n".join(text_messages).strip()
             if not final_text: continue
 
             date_key = get_date_key(timestamp) if timestamp else "unknown_date"
