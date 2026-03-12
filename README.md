@@ -149,6 +149,6 @@ To use this plugin, you must perform the first three steps!
 
 ## 📄 To Do List
 
-- 群聊记忆
-  - 理论上现在已经支持群聊了！但是作者的AI没怎么尝试过，如果有问题或没问题欢迎告诉我谢谢！
-- 节点关联
+-[x] 群聊记忆
+-[] 节点关联
+-[] 通过随机联想和(无人格)LLM辅助实现(有人格的这个)AI梦境
