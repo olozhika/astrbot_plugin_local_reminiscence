@@ -149,6 +149,6 @@ To use this plugin, you must perform the first three steps!
 
 ## 📄 To Do List
 
--[x] 群聊记忆
--[] 节点关联
--[] 通过随机联想和(无人格)LLM辅助实现(有人格的这个)AI梦境
+- [x] 群聊记忆
+- [] 节点关联
+- [] 通过随机联想和(无人格)LLM辅助实现(有人格的这个)AI梦境
