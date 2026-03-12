@@ -26,10 +26,10 @@ class DailySummarizer:
             
         return text.strip()
 
-    async def extract_nodes_from_events(self, events: List[dict], date_str: str, existing_nodes_context: str = "") -> list | None:
+    async def extract_nodes_from_events(self, events: List[dict], date_str: str, existing_nodes_context: str = "") -> tuple[list, list] | None:
         """从已有的事件叙述中提取记忆节点"""
         if not events:
-            return []
+            return [], []
             
         events_text = "\n---\n".join([f"事件ID: {ev['event_id']}\n叙述: {ev['narrative']}" for ev in events])
         
@@ -40,9 +40,14 @@ class DailySummarizer:
                 "nodes": {
                     "type": "array",
                     "items": MemoryNode.model_json_schema()
+                },
+                "deleted_nodes": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "需要删除或合并的冗余节点名称列表"
                 }
             },
-            "required": ["nodes"]
+            "required": ["nodes", "deleted_nodes"]
         }
         # 替换 schema 中的占位符
         schema_str = json.dumps(schema_dict, ensure_ascii=False, indent=2).replace("{ai_name}", self.ai_name)
@@ -60,6 +65,8 @@ class DailySummarizer:
     - 为每个节点提供 type（类型）和 description（综合描述）。
     - **节点信息维护策略**：
         - **继承与演进**：参考下方的“已知记忆节点背景”。对于已存在的节点，应在保留核心事实（如身份、关键背景）的基础上，根据今日信息更新其状态或追加新进展。
+        - **合并同义词**：如果你发现今日提到的某个实体/概念与“已知记忆节点背景”中的某个节点是同一个，请务必使用**已有节点的名称**进行更新，不要创建重复节点。
+        - **清理冗余**：如果发现某些已有节点可以被更精确的新节点完全替代（例如：有了“鬼畜猫”和“Mines”后，旧的“鬼畜猫和Mines”组合节点就显得冗余了），请将旧节点名称放入 `deleted_nodes` 列表中。
         - **修正与精简**：如果发现旧描述中存在已失效、不合时宜或过于琐碎的信息，请果断进行修正或剔除，保持描述的精炼与准确。
         - **增量更新**：重点记录今日对话中体现出的新变化、新观点或新属性。
     - 今天的日期是 {date_str}。
@@ -75,7 +82,8 @@ class DailySummarizer:
             
             data = json.loads(content)
             nodes_data = data.get("nodes", [])
-            return [MemoryNode(**n) for n in nodes_data]
+            deleted_nodes = data.get("deleted_nodes", [])
+            return [MemoryNode(**n) for n in nodes_data], deleted_nodes
 
         except Exception as e:
             logger.error(f"提取节点时发生错误: {e}", exc_info=True)
@@ -102,6 +110,8 @@ class DailySummarizer:
     - 为每个节点提供 type（类型）和 description（综合描述）。
     - **节点信息维护策略**：
         - **继承与演进**：参考下方的“已知记忆节点背景”。对于已存在的节点，应在保留核心事实（如身份、关键背景）的基础上，根据今日信息更新其状态或追加新进展。
+        - **合并同义词**：如果你发现今日提到的某个实体/概念与“已知记忆节点背景”中的某个节点是同一个，请务必使用**已有节点的名称**进行更新，不要创建重复节点。
+        - **清理冗余**：如果发现某些已有节点可以被更精确的新节点完全替代（例如：有了“鬼畜猫”和“Mines”后，旧的“鬼畜猫和Mines”组合节点就显得冗余了），请将旧节点名称放入 `deleted_nodes` 列表中。
         - **修正与精简**：如果发现旧描述中存在已失效、不合时宜或过于琐碎的信息，请果断进行修正或剔除，保持描述的精炼与准确。
         - **增量更新**：重点记录今日对话中体现出的新变化、新观点或新属性。
 - 格式规范：
