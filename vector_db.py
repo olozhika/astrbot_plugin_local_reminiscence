@@ -24,13 +24,12 @@ class VectorDB:
             )
         )
         self.collection = self.client.get_or_create_collection(name="events")
-        self.model = self._load_embedding_model(
-            model_name=model_name,
-            model_cache_dir=model_cache_dir,
-            hf_endpoint=hf_endpoint,
-            local_files_only=local_files_only,
-            trust_remote_code=trust_remote_code
-        )
+        self.model = None
+        self.model_name = model_name
+        self.model_cache_dir = model_cache_dir
+        self.hf_endpoint = hf_endpoint
+        self.local_files_only = local_files_only
+        self.trust_remote_code = trust_remote_code
 
     def _load_embedding_model(
         self,
@@ -61,8 +60,44 @@ class VectorDB:
         if local_files_only:
             model_kwargs["local_files_only"] = True
 
+        def _build_model(name: str) -> SentenceTransformer:
+            return SentenceTransformer(name, **model_kwargs)
+
+        def _reset_hf_http_session():
+            # 某些 huggingface_hub/httpx 版本可能出现 "client has been closed"
+            # 尝试重置全局会话后重试一次
+            try:
+                from huggingface_hub.utils import _http as hf_http  # type: ignore
+                reset_fn = getattr(hf_http, "reset_sessions", None)
+                if callable(reset_fn):
+                    reset_fn()
+            except Exception:
+                pass
+
+        candidate_names = [model_name]
+        # 常见短名自动补全到 sentence-transformers 命名空间，提升镜像兼容性
+        if ("/" not in model_name) and (not Path(model_name).exists()):
+            candidate_names.append(f"sentence-transformers/{model_name}")
+
+        last_exc = None
+        for idx, candidate in enumerate(candidate_names):
+            try:
+                return _build_model(candidate)
+            except Exception as exc:
+                last_exc = exc
+                if "client has been closed" in str(exc).lower():
+                    _reset_hf_http_session()
+                    try:
+                        return _build_model(candidate)
+                    except Exception as exc2:
+                        last_exc = exc2
+                if idx < len(candidate_names) - 1:
+                    continue
+                break
+
         try:
-            return SentenceTransformer(model_name, **model_kwargs)
+            _reset_hf_http_session()
+            return _build_model(model_name)
         except Exception as exc:
             tips = [
                 f"模型加载失败: {model_name}",
@@ -74,10 +109,21 @@ class VectorDB:
             ]
             raise RuntimeError("\n".join(tips)) from exc
 
+    def _ensure_model(self):
+        if self.model is None:
+            self.model = self._load_embedding_model(
+                model_name=self.model_name,
+                model_cache_dir=self.model_cache_dir,
+                hf_endpoint=self.hf_endpoint,
+                local_files_only=self.local_files_only,
+                trust_remote_code=self.trust_remote_code
+            )
+
     def add_events(self, events: List[Dict]):
         """将事件向量化并存入 ChromaDB"""
         if not events:
             return
+        self._ensure_model()
         
         ids = [ev['event_id'] for ev in events]
         documents = [ev['narrative'] for ev in events]
@@ -93,6 +139,7 @@ class VectorDB:
 
     def search_events(self, query: str, top_n: int = 10) -> List[Dict]:
         """搜索最接近的事件 ID 和相关度分数"""
+        self._ensure_model()
         # 开启归一化
         query_embedding = self.model.encode([query], normalize_embeddings=True).tolist()
         results = self.collection.query(
