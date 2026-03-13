@@ -46,15 +46,41 @@ class LocalReminiscencePlugin(Star):
         self.username = self.config.get("username", "olozhika")
         self.ai_name = self.config.get("ai_name", "Lanya")
         embedding_model = self.config.get("embedding_model", "paraphrase-multilingual-MiniLM-L12-v2")
+        hf_endpoint = self.config.get("hf_endpoint", "https://hf-mirror.com")
+        embedding_cache_dir_rel = self.config.get("embedding_cache_dir", "APLR_ModelCache")
+
+        def to_bool(value, default=False):
+            if isinstance(value, bool):
+                return value
+            if value is None:
+                return default
+            if isinstance(value, str):
+                return value.strip().lower() in ["1", "true", "yes", "on"]
+            return bool(value)
+
+        embedding_local_files_only = to_bool(self.config.get("embedding_local_files_only", False))
+        embedding_trust_remote_code = to_bool(self.config.get("embedding_trust_remote_code", False))
+        embedding_cache_dir = None
+        if embedding_cache_dir_rel:
+            embedding_cache_dir = resolve_path(embedding_cache_dir_rel, data_dir)
 
         # 确保目录存在
         self.dialog_folder.mkdir(parents=True, exist_ok=True)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.vector_db_path.mkdir(parents=True, exist_ok=True)
+        if embedding_cache_dir:
+            embedding_cache_dir.mkdir(parents=True, exist_ok=True)
 
         # 初始化数据库
         self.db = MemoryDB(str(self.db_path))
-        self.vector_db = VectorDB(str(self.vector_db_path), model_name=embedding_model)
+        self.vector_db = VectorDB(
+            str(self.vector_db_path),
+            model_name=embedding_model,
+            model_cache_dir=str(embedding_cache_dir) if embedding_cache_dir else None,
+            hf_endpoint=hf_endpoint,
+            local_files_only=embedding_local_files_only,
+            trust_remote_code=embedding_trust_remote_code
+        )
 
     @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):

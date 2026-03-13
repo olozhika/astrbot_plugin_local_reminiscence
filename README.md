@@ -59,8 +59,8 @@ To use this plugin, you must perform the first three steps!
 
 1.  **下载安装 / Installation**
     - 从Astrbot插件市场搜索下载此插件
-    - 注意第一次下载本插件时需要有办法（魔法）链接至HuggingFace以便下载模型！只要本插件成功启动过一次就不用魔法了！
-    - 下载时会自动安装依赖，可能需要等一会，您可以趁此机会休息约10分钟（尴尬目移...）
+    - 下载时会自动安装依赖，首次安装可能需要等待几分钟
+    - 中国大陆部署建议优先使用国内 PyPI 镜像和 HF 镜像（见下方“国内部署建议”）
 
 2.  **配置插件 / Configuration**:
     - 设置目标会话ID列表用于识别对话，`target_user_id_list` 格式为 `["机器人ID:会话类型:会话ID", ...]`，相关对话会用于每日总结
@@ -69,6 +69,8 @@ To use this plugin, you must perform the first three steps!
     - 插件会自动从 AstrBot 的用户识别功能中提取发送者昵称，请在 Astrbot-其他配置 开启官方的用户识别。如果该功能未开启，则会使用配置中指定的默认 `username`
       - 如果你希望让AI记住的用户名并不是你的ID，建议安装[统一昵称](https://github.com/Hakuin123/astrbot_plugin_uni_nickname)插件，并开启`system_replace`模式
     - 设置 AI 名称，这是在 AI 的记忆中它使用的名字
+    - 国内网络建议保留默认 `hf_endpoint=https://hf-mirror.com`
+    - 若你已提前下载模型，可将 `embedding_model` 改成本地目录，并开启 `embedding_local_files_only=true`
     - 其他配置不太重要，有需要就改
 
 3.  **设置每日总结 / Daily Summary**
@@ -82,6 +84,26 @@ To use this plugin, you must perform the first three steps!
 6.  [可选] **系统prompt额外提醒 / Add in system_prompt**
     - 如果你的AI平时傻傻的想不起来调用工具，可以考虑在人设文本里加一句“你可以使用recall_memory_tool工具回忆与输入文本相关的记忆，可以使用recall_node_tool工具回忆特定概念”
     - 如果你的AI很聪明，或者不需要它经常调用工具就不用啦，本插件本来也有自动回忆功能的！
+
+---
+
+## 🇨🇳 国内部署建议
+
+1.  **依赖安装（PyPI 镜像）**
+    - 若你手动安装插件依赖，建议使用：
+      `pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple`
+    - 若由 AstrBot 自动安装依赖，可提前设置环境变量 `PIP_INDEX_URL` 为国内镜像地址。
+
+2.  **模型下载（HuggingFace 镜像）**
+    - 插件默认 `hf_endpoint` 已设置为 `https://hf-mirror.com`，会优先走镜像下载模型。
+    - 首次下载完成后，模型会缓存在 `embedding_cache_dir`（默认 `APLR_ModelCache`），后续可离线复用。
+
+3.  **纯离线部署（无外网）**
+    - 先在可联网机器下载好 `SentenceTransformer` 模型目录。
+    - 目标机器配置：
+      - `embedding_model` 填本地模型目录（绝对路径）
+      - `embedding_local_files_only=true`
+    - 这样插件启动时不会再尝试联网下载模型。
 
 ---
 

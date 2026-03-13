@@ -56,8 +56,32 @@
   "embedding_model": {
     "description": "向量化模型名称",
     "type": "string",
-    "hint": "用于向量化的 SentenceTransformer 模型名称。注意，修改本项目后点击保存时网络需要能够访问HuggingFace。",
+    "hint": "用于向量化的 SentenceTransformer 模型名称。支持 HuggingFace 仓库名或本地模型目录绝对路径。",
     "default": "paraphrase-multilingual-MiniLM-L12-v2"
+  },
+  "hf_endpoint": {
+    "description": "HuggingFace 镜像地址",
+    "type": "string",
+    "hint": "用于下载 embedding 模型。中国大陆可使用 https://hf-mirror.com 。留空则使用默认官方地址。",
+    "default": "https://hf-mirror.com"
+  },
+  "embedding_cache_dir": {
+    "description": "Embedding 模型缓存目录",
+    "type": "string",
+    "hint": "模型下载缓存目录。相对路径会基于插件数据目录解析；同一模型下次可离线复用。",
+    "default": "APLR_ModelCache"
+  },
+  "embedding_local_files_only": {
+    "description": "仅使用本地模型文件",
+    "type": "bool",
+    "hint": "开启后不会联网下载模型，只会从本地缓存或本地路径读取，适合离线部署。",
+    "default": false
+  },
+  "embedding_trust_remote_code": {
+    "description": "允许远程模型代码",
+    "type": "bool",
+    "hint": "仅在你明确知道模型需要 remote code 时开启。默认关闭更安全。",
+    "default": false
   },
   "auto_recall_probability": {
     "description": "自动触发记忆检索概率",
