@@ -20,9 +20,16 @@ class MemoryDB:
                     emotion TEXT,
                     importance INTEGER CHECK(importance BETWEEN 1 AND 10),
                     emotional_intensity INTEGER CHECK(emotional_intensity BETWEEN 1 AND 10),
+                    reflection TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            # 数据库迁移：检查 reflection 列是否存在，如果不存在则添加
+            cursor.execute("PRAGMA table_info(events)")
+            columns = [column[1] for column in cursor.fetchall()]
+            if 'reflection' not in columns:
+                cursor.execute("ALTER TABLE events ADD COLUMN reflection TEXT")
+            
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_events_date ON events(date)")
 
             cursor.execute("""
@@ -126,15 +133,16 @@ class MemoryDB:
             for event in summary.events:
                 cursor.execute("""
                     INSERT OR REPLACE INTO events 
-                    (event_id, date, narrative, emotion, importance, emotional_intensity)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    (event_id, date, narrative, emotion, importance, emotional_intensity, reflection)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                 """, (
                     event.event_id,
                     summary.date,
                     event.narrative,
                     event.emotion,
                     event.importance,
-                    event.emotional_intensity
+                    event.emotional_intensity,
+                    event.reflection
                 ))
                 for tag_name in event.tags:
                     cursor.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (tag_name,))
@@ -175,10 +183,12 @@ class MemoryDB:
                 events = []
                 for ev_row in cursor.fetchall():
                     events.append({
+                        "event_id": ev_row['event_id'],
                         "narrative": ev_row['narrative'],
                         "emotion": ev_row['emotion'],
                         "importance": ev_row['importance'],
                         "emotional_intensity": ev_row['emotional_intensity'],
+                        "reflection": ev_row['reflection'] if ev_row['reflection'] is not None else "",
                         "tags": ev_row['tags'].split(',') if ev_row['tags'] else []
                     })
                 
@@ -215,6 +225,16 @@ class MemoryDB:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM events WHERE date = ?", (date,))
             return [dict(row) for row in cursor.fetchall()]
+
+    def get_reflection_by_date(self, date: str) -> dict:
+        """获取指定日期的自由心得"""
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT date, reflection FROM daily_reflections WHERE date = ?", (date,))
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+            return None
 
     def get_nodes_by_names(self, names: List[str]) -> List[dict]:
         """根据名称列表获取节点信息"""
