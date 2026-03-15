@@ -97,24 +97,24 @@ To use this plugin, you must perform the first three steps!
 ### 🛠️ 指令列表 / Commands
 | 指令 | 参数 | 说明 |
 | :--- | :--- | :--- |
-| `/daily_summary_command` | `[YYYY-MM-DD]` | 手动触发指定日期的总结（默认为今天）。 |
-| `/recall_memory_command` | `[text] [count]` | 根据输入文本手动搜索相关记忆。 |
-| `/recall_node_command` | `[name]` | 搜索特定的记忆节点（人物、地点或概念）。 |
-| `/recall_event_reflection_command` | `[event_id]` | 获取特定事件的深度观察和感想。 |
-| `/recall_daily_reflection_command` | `[YYYY-MM-DD]` | 获取特定日期的每日自由心得（感悟）。 |
-| `/write_node` | `[名] [类] [述]` | 手动写入或更新记忆节点。 |
-| `/extract_chat_history_command` | `[YYYY-MM-DD]` | 从数据库提取指定日期的聊天记录（维护用）。 |
-| `/update_nodes_command` | `[YYYY-MM-DD]` | 从已有事件中重新提取记忆节点（维护用）。 |
-| `/vectorize_events` | `[YYYY-MM-DD]` | 将指定日期的事件重新向量化（维护用）。 |
+| `/daily_summary_command` | `[YYYY-MM-DD]` | 手动触发指定日期的总结（默认为今天） |
+| `/recall_memory_command` | `[text] [count]` | 根据输入文本手动搜索相关记忆 |
+| `/recall_node_command` | `[name]` | 搜索特定的记忆节点 |
+| `/recall_event_reflection_command` | `[event_id]` | 获取特定事件的深度观察和感想 |
+| `/recall_daily_reflection_command` | `[YYYY-MM-DD]` | 获取特定日期的每日自由心得 |
+| `/write_node` | `[名] [类] [述]` | 手动写入或更新记忆节点 |
+| `/extract_chat_history_command` | `[YYYY-MM-DD]` | 从数据库提取指定日期的聊天记录（维护用） |
+| `/update_nodes_command` | `[YYYY-MM-DD]` | 从已有事件中重新提取记忆节点（维护用） |
+| `/vectorize_events` | `[YYYY-MM-DD]` | 将指定日期的事件重新向量化（维护用） |
 
 ### 🧰 工具列表 / LLM Tools
 | 工具名称 | 参数 | 说明 |
 | :--- | :--- | :--- |
-| `daily_summary_tool` | `date` | AI 触发指定日期的总结。 |
-| `recall_memory_tool` | `query, count` | AI 检索最相关的事件记忆。 |
-| `recall_node_tool` | `name` | AI 搜索特定的实体或概念背景。 |
-| `recall_event_reflection_tool` | `event_id` | AI 回想特定事件的深度细节和心理活动。 |
-| `recall_daily_reflection_tool` | `date` | AI 回想特定日期的整体心境。 |
+| `daily_summary_tool` | `date` | AI 触发指定日期的总结 |
+| `recall_memory_tool` | `query, count` | AI 检索最相关的事件记忆 |
+| `recall_node_tool` | `name` | AI 搜索特定的实体或概念背景 |
+| `recall_event_reflection_tool` | `event_id` | AI 回想特定事件的深度细节和心理活动 |
+| `recall_daily_reflection_tool` | `date` | AI 回想特定日期的整体心境 |
 ---
 
 人类使用command范例如下（第一句这对吗？？？）
