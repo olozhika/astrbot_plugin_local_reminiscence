@@ -38,7 +38,7 @@ A lightweight local memory plugin for AstrBot that uses local embedding models a
 ## ✨ 功能特性 / Features
 
 - **本地化与隐私安全 / Local & Private**
-  使用本地 Embedding 模型和本地 SQLite 数据库，无需额外 API，零成本且保护隐私。[补充: APLR_DailyReview.db is everything! 换设备换平台只需要把这一个文件扛走 你的AI记忆就不会消失，我用了快一个月这文件大小才200K]
+  使用本地 Embedding 模型和本地 SQLite 数据库，无需额外 API，零成本且保护隐私。*[补充: APLR_DailyReview.db is everything! 换设备换平台换向量模型只需要把这一个文件扛走 你的AI记忆就不会消失，我用了快一个月这文件大小才200K]*
   Uses local embedding models and SQLite database. No external APIs required, zero cost, and privacy-focused.
 
 - **每日总结 / Daily Summarization**
@@ -106,7 +106,7 @@ To use this plugin, you must perform the first three steps!
 | `/write_node` | `[名] [类] [述]` | 手动写入或更新记忆节点 |
 | `/extract_chat_history_command` | `[YYYY-MM-DD]` | 从数据库提取指定日期的聊天记录（维护用） |
 | `/update_nodes_command` | `[YYYY-MM-DD]` | 从已有事件中重新提取记忆节点（维护用） |
-| `/vectorize_events` | `[YYYY-MM-DD]` | 将指定日期的事件重新向量化（维护用） |
+| `/vectorize_events` | `[YYYY-MM-DD]` | 将指定日期的事件重新向量化（维护用，比如更换了向量模型后使用） |
 
 ### 🧰 工具列表 / LLM Tools
 | 工具名称 | 参数 | 说明 |
