@@ -5,8 +5,6 @@
 3. **完善指令集**：新增了查看事件深度感想和每日感悟的指令及工具。
 4. **深度联想鼓励**：增加了可选的prompt鼓励AI利用recall工具进行深度回想和发散性联想。此功能默认关闭。
 
-<details>
-<summary>点击展开更早版本更新说明</summary>
 
 ### 🔄 小更新说明 (v1.1.1)
 
@@ -22,4 +20,3 @@
 - **智能用户识别 / Smart User Identification**: 自动从 AstrBot 的用户识别标签（system reminder）中提取用户昵称，支持在同一会话中准确区分不同发言者。
 - **新增手动提取指令 / New Extraction Command**: 新增 `/extract_chat_history_command [日期]`，支持手动从数据库补输出指定日期的聊天记录。（一般不会用到）
 
-</details>
