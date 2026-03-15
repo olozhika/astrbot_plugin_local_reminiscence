@@ -38,7 +38,7 @@ A lightweight local memory plugin for AstrBot that uses local embedding models a
 ## ✨ 功能特性 / Features
 
 - **本地化与隐私安全 / Local & Private**
-  使用本地 Embedding 模型和本地 SQLite 数据库，无需额外 API，零成本且保护隐私。
+  使用本地 Embedding 模型和本地 SQLite 数据库，无需额外 API，零成本且保护隐私。[补充: APLR_DailyReview.db is everything! 换设备换平台只需要把这一个文件扛走 你的AI记忆就不会消失，我用了快一个月这文件大小才200K]
   Uses local embedding models and SQLite database. No external APIs required, zero cost, and privacy-focused.
 
 - **每日总结 / Daily Summarization**
