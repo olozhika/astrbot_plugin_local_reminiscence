@@ -15,10 +15,8 @@ A lightweight local memory plugin for AstrBot that uses local embedding models a
 2. **新增事件感想**：事件的深度感想（reflection）现在会在第一阶段与事件叙述同步生成，增强了记忆深度。
 3. **完善指令集**：新增了查看事件深度感想和每日感悟的指令及工具。
 
-## 🔄 历史更新 / History Log
-
 <details>
-<summary>点击展开 v1.1.1 及更早版本</summary>
+<summary>点击展开更早版本更新说明</summary>
 
 ### 🔄 小更新说明 (v1.1.1)
 
@@ -35,11 +33,6 @@ A lightweight local memory plugin for AstrBot that uses local embedding models a
 - **新增手动提取指令 / New Extraction Command**: 新增 `/extract_chat_history_command [日期]`，支持手动从数据库补输出指定日期的聊天记录。（一般不会用到）
 
 </details>
-
-### 老用户升级指南（新用户请往下翻使用指南）
-
-1. 更改 插件设置 - `target_user_id_list`
-2. 开启 Astrbot-其他配置-用户识别
 
 ## ✨ 功能特性 / Features
 
