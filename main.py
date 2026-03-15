@@ -18,7 +18,7 @@ from .vector_db import VectorDB
 from .chat_history_extract import clean_dialogue_with_different_limits
 import random
 
-@register("local_reminiscence", "olozhika", "本地记忆插件，包含每日总结工具", "1.1.1")
+@register("local_reminiscence", "olozhika", "本地记忆插件，包含每日总结工具", "1.1.3")
 class LocalReminiscencePlugin(Star):
     def __init__(self, context: Context, config: any = None):
         super().__init__(context)
@@ -120,7 +120,9 @@ class LocalReminiscencePlugin(Star):
                                 memory_text += "📍 发生的重要事件:\n"
                                 for e in filtered_events:
                                     tags_str = f" #{' #'.join(e['tags'])}" if e['tags'] else ""
-                                    memory_text += f"  - [重要性: {e['importance']}/10] {e['narrative']} (情绪: {e['emotion']}){tags_str}\n"
+                                    memory_text += f"  - {e['narrative']} ({e['emotion']}) [ID: {e['event_id']}]\n"
+                                if self.config.get("encourage_deep_recall", False):
+                                    memory_text += "注：若想进一步回忆某个事件的细节或感想，可以使用 `recall_event_reflection_tool` 并传入对应的 事件ID来深度回想；如果觉得回忆还不够充分，可以使用 `recall_memory_tool` 对刚想起的片段进行联想）\n"
                             memory_text += "---\n"
                     
                     if reflections:
@@ -163,8 +165,8 @@ class LocalReminiscencePlugin(Star):
             if all_nodes:
                 context_parts = []
                 for n in all_nodes:
-                    suffix = " (这是当前的聊天对象)" if n.get('is_user') else ""
-                    context_parts.append(f"📌 {n['name']}{suffix}，{n['description']}")
+                    last_updated_date = n['last_updated'].split(' ')[0] if n['last_updated'] else "未知"
+                    context_parts.append(f"📌 {n['name']}，{n['description']}。(最后更新: {last_updated_date})")
                 
                 injection_text = f"\n\n【记忆节点背景 - 这是你对提及实体及当前聊天对象的已知认知】\n" + "\n\n".join(context_parts) + "\n"
                 req.system_prompt += injection_text
@@ -204,13 +206,15 @@ class LocalReminiscencePlugin(Star):
                             selected_events.extend(random.sample(remaining, min(len(remaining), m2)))
                         
                         if selected_events:
-                            recall_text = "\n\n【自动回想 - 基于你当前的话题，你回想起了以下片段】\n"
+                            recall_text = "\n\n【自动回想 - 你回想起了以下片段】\n"
                             for ev in selected_events:
                                 recall_text += f"📅 {ev['date']}\n"
-                                recall_text += f"📍 {ev['narrative']}\n"
+                                recall_text += f"📍 {ev['narrative']} [ID: {ev['event_id']}]\n"
                                 recall_text += f"💭 {self.ai_name}感到{ev['emotion']}\n"
-                                recall_text += f"(相关度{ev.get('relevance', 0)}%)\n"
+                                # recall_text += f"(相关度{ev.get('relevance', 0)}%)\n"
                                 recall_text += "---\n"
+                            if self.config.get("encourage_deep_recall", False):
+                                recall_text += "（注：若想进一步回忆某个事件的细节或感想，可以使用 `recall_event_reflection_tool` 并传入对应的 事件ID来深度回想；如果觉得回忆还不够充分，可以使用 `recall_memory_tool` 对刚想起的片段进行联想）"
                             req.system_prompt += recall_text
                             trigger_reason = "关键词" if hit_keyword else "概率"
                             logger.info(f"[APLR] 自动触发记忆检索({trigger_reason})，注入了 {len(selected_events)} 条相关记忆")
@@ -355,7 +359,8 @@ class LocalReminiscencePlugin(Star):
                 return await self.context.llm_generate(
                     chat_provider_id=provider_id,
                     prompt=prompt,
-                    system_prompt=system_prompt
+                    system_prompt=system_prompt,
+                    history=[]
                 )
 
             summarizer = DailySummarizer(
@@ -423,6 +428,70 @@ class LocalReminiscencePlugin(Star):
         
         return await self._get_memory_retrieval_text(query, count=count if count > 0 else None)
 
+    @llm_tool(name="recall_event_reflection_tool")
+    async def recall_event_reflection_tool(self, event: AstrMessageEvent, event_id: str) -> str:
+        """获取特定事件的深度观察和感想。当你看到某个事件的简述（narrative）并希望回想更多细节或当时的心理活动时使用。
+        
+        Args:
+            event_id(string): 事件的唯一ID（如 evt_20260312_001）。
+        """
+        return await self._get_event_reflection_logic(event_id)
+
+    async def _get_event_reflection_logic(self, event_id: str) -> str:
+        ev = self.db.get_event_by_id(event_id)
+        if ev:
+            reflection = ev.get('reflection', '')
+            if reflection:
+                res = f"关于事件 {event_id} 的深度观察和感想：\n{reflection}"
+            else:
+                res = f"该事件 ({event_id}) 暂时没有记录深度感想呢。"
+            
+            if self.config.get("encourage_deep_recall", False):
+                res += f"\n（注：若希望回忆该事件发生当天 ({ev['date']}) 的整体心境，可选择调用 `recall_daily_reflection_tool`。）"
+            return res
+        return f"未找到 ID 为 {event_id} 的事件。"
+
+    @llm_tool(name="recall_daily_reflection_tool")
+    async def recall_daily_reflection_tool(self, event: AstrMessageEvent, date: str) -> str:
+        """获取特定日期的每日自由心得（感悟）。想回忆某天的整体心境时使用。
+        
+        Args:
+            date(string): 日期，格式为 YYYY-MM-DD。
+        """
+        return await self._get_daily_reflection_logic(date)
+
+    async def _get_daily_reflection_logic(self, date: str) -> str:
+        ref = self.db.get_reflection_by_date(date)
+        if ref:
+            reflection = ref.get('reflection', '')
+            if reflection:
+                return f"关于 {date} 的整体感悟是：\n{reflection}"
+            else:
+                return f"那天 ({date}) 好像没写下什么特别的感悟呢。"
+        return f"数据库里没找到关于 {date} 的感悟记录。"
+
+    @filter.command("recall_event_reflection_command")
+    async def recall_event_reflection_command(self, event: AstrMessageEvent, event_id: str = ""):
+        """获取特定事件的深度观察和感想。用法：/recall_event_reflection_command [事件ID]"""
+        event_id = event_id.strip()
+        if not event_id:
+            yield event.plain_result("请输入事件ID（如 evt_20260312_001）。")
+            return
+        
+        res = await self._get_event_reflection_logic(event_id)
+        yield event.plain_result(res)
+
+    @filter.command("recall_daily_reflection_command")
+    async def recall_daily_reflection_command(self, event: AstrMessageEvent, date: str = ""):
+        """获取特定日期的每日自由心得（感悟）。用法：/recall_daily_reflection_command [日期(YYYY-MM-DD)]"""
+        date = date.strip()
+        if not date:
+            yield event.plain_result("请输入日期（如 2026-03-12）。")
+            return
+        
+        res = await self._get_daily_reflection_logic(date)
+        yield event.plain_result(res)
+
     @filter.command("recall_node_command")
     async def recall_node_command(self, event: AstrMessageEvent):
         """搜索某个记忆节点（实体或概念）。用法：/recall_node_command [名称]"""
@@ -440,11 +509,40 @@ class LocalReminiscencePlugin(Star):
             for node in nodes:
                 resp += f"📌 **{node['name']}** ({node['type']})\n"
                 resp += f"📝 描述: {node['description']}\n"
-                resp += f"🕒 最后更新: {node['last_updated']}\n"
+                last_updated_date = node['last_updated'].split(' ')[0] if node['last_updated'] else "未知"
+                resp += f"🕒 最后更新: {last_updated_date}\n"
                 resp += "\n"
             yield event.plain_result(resp)
         else:
             yield event.plain_result(f"暂时没有关于“{query}”的节点记忆呢。")
+
+    @filter.command("write_node")
+    async def write_node_command(self, event: AstrMessageEvent):
+        """手动写入或更新记忆节点。用法：/write_node [节点名] [类型] [描述]"""
+        msg = event.message_str.strip()
+        # 移除命令名
+        content = re.sub(r'^/?write_node\s*', '', msg).strip()
+        
+        if not content:
+            yield event.plain_result("用法：/write_node [节点名] [类型] [描述]")
+            return
+            
+        parts = content.split(maxsplit=2)
+        if len(parts) < 3:
+            yield event.plain_result("参数不足。用法：/write_node [节点名] [类型] [描述]\n示例：/write_node 王小美 人物 住在璃月的椰羊爱好者")
+            return
+            
+        name, node_type, description = parts
+        
+        from .models import MemoryNode
+        node = MemoryNode(name=name, type=node_type, description=description)
+        
+        try:
+            self.db.update_nodes([node])
+            yield event.plain_result(f"✅ 已成功写入/更新节点：{name} ({node_type})")
+        except Exception as e:
+            logger.error(f"写入节点失败: {e}")
+            yield event.plain_result(f"❌ 写入节点失败: {e}")
 
     @llm_tool(name="recall_node_tool")
     async def recall_node_tool(self, event: AstrMessageEvent, name: str) -> str:
@@ -455,9 +553,10 @@ class LocalReminiscencePlugin(Star):
         """
         nodes = self.db.search_nodes(name)
         if nodes:
-            res = f"找到以下关于 {name} 的相关节点信息：\n"
+            res = f"找到以下关于 {name} 的相关 node 信息：\n"
             for node in nodes:
-                res += f"- {node['name']} ({node['type']}): {node['description']} (最后更新于 {node['last_updated']})\n"
+                last_updated_date = node['last_updated'].split(' ')[0] if node['last_updated'] else "未知"
+                res += f"- {node['name']} ({node['type']}): {node['description']} (最后更新于 {last_updated_date})\n"
             return res
         return f"未找到关于 {name} 的节点信息。"
 
@@ -520,16 +619,19 @@ class LocalReminiscencePlugin(Star):
         if nodes:
             resp += "💡 相关背景知识：\n"
             for node in nodes:
-                resp += f"  - {node['name']} ({node['type']}): {node['description']}\n"
+                last_updated_date = node['last_updated'].split(' ')[0] if node['last_updated'] else "未知"
+                resp += f"  - {node['name']} ({node['type']}) [最后更新: {last_updated_date}]: {node['description']}\n"
             resp += "\n"
 
         for ev in selected_events:
             resp += f"📅 {ev['date']}\n"
-            resp += f"📍 {ev['narrative']}\n"
+            resp += f"📍 {ev['narrative']} [ID: {ev['event_id']}]\n"
             resp += f"💭 {self.ai_name}感到{ev['emotion']}\n"
             resp += f"(事件相关度{ev.get('relevance', 0)}%)\n"
             resp += "---\n"
         
+        if self.config.get("encourage_deep_recall", False):
+            resp += "\n（注：若想进一步回忆某个事件的细节 or 感想，可以使用 `recall_event_reflection_tool` 并传入对应的 事件ID来深度回想；如果觉得回忆还不够充分，可以使用 `recall_memory_tool` 对刚想起的片段进行联想）"
         return resp
 
     def _rank_events(self, events: List[dict], query: str = "") -> List[dict]:
@@ -707,7 +809,8 @@ class LocalReminiscencePlugin(Star):
                 return await self.context.llm_generate(
                     chat_provider_id=provider_id,
                     prompt=prompt,
-                    system_prompt=system_prompt
+                    system_prompt=system_prompt,
+                    history=[]
                 )
 
             # 3. 获取基础提示词

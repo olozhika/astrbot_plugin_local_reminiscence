@@ -9,13 +9,23 @@ A lightweight local memory plugin for AstrBot that uses local embedding models a
 (另：如果你想把这个插件改成适配其他平台的插件，应该只要改main.py就好了)
 
 
-## 🔄 小更新说明 (v1.1.1)
+## 🔄 更新说明 / Update Log (v1.1.2)
+
+1. **优化每日总结逻辑**：将总结过程拆分为“事件+感悟”提取与“记忆节点”提取两个独立阶段，显著提升对话数较多时的节点更新质量。
+2. **新增事件感想**：事件的深度感想（reflection）现在会在第一阶段与事件叙述同步生成，增强了记忆深度。
+3. **完善指令集**：新增了查看事件深度感想和每日感悟的指令及工具。
+4. **深度联想鼓励**：增加了可选的prompt鼓励AI利用recall工具进行深度回想和发散性联想。此功能默认关闭。
+
+<details>
+<summary>点击展开更早版本更新说明</summary>
+
+### 🔄 小更新说明 (v1.1.1)
 
 1. 优化了接收消息自动唤起回忆时的搜索记忆节点算法
 2. 优化了聊天记录导出函数，现在Cron Job和send_message_to_user的发言也能被记录
 3. 优化每日总结的记忆节点更新过程：现在AI会自动合并、删除冗余节点
 
-## 🔄 更新说明 / Update Log (v1.1.0)
+### 🔄 更新说明 / Update Log (v1.1.0)
 
 **喜报：本地回忆[APLR]插件现在已支持多会话和群聊！（作者已确认无bug）**
 
@@ -23,10 +33,7 @@ A lightweight local memory plugin for AstrBot that uses local embedding models a
 - **智能用户识别 / Smart User Identification**: 自动从 AstrBot 的用户识别标签（system reminder）中提取用户昵称，支持在同一会话中准确区分不同发言者。
 - **新增手动提取指令 / New Extraction Command**: 新增 `/extract_chat_history_command [日期]`，支持手动从数据库补输出指定日期的聊天记录。（一般不会用到）
 
-### 老用户升级指南（新用户请往下翻使用指南）
-
-1. 更改 插件设置 - `target_user_id_list`
-2. 开启 Astrbot-其他配置-用户识别
+</details>
 
 ## ✨ 功能特性 / Features
 
@@ -35,8 +42,8 @@ A lightweight local memory plugin for AstrBot that uses local embedding models a
   Uses local embedding models and SQLite database. No external APIs required, zero cost, and privacy-focused.
 
 - **每日总结 / Daily Summarization**
-  自动或手动将聊天记录总结为结构化的事件和每日感悟，并向量化存储事件。
-  Automatically or manually summarizes chat history into structured events and daily reflections, and stores events as vectors.
+  自动或手动将聊天记录总结为结构化的事件和每日感悟。采用两阶段总结法，确保事件叙述、深度感想和记忆节点都能得到精准提取。
+  Automatically or manually summarizes chat history into structured events and daily reflections. Uses a two-stage process to ensure accurate extraction of narratives, reflections, and memory nodes.
 
 - **记忆节点提取 / Memory Node Extraction**
   识别并存储重要的实体（人物、地点、概念），包含描述和类型。
@@ -87,38 +94,27 @@ To use this plugin, you must perform the first three steps!
 
 ## ⌨️ 指令和工具 / Commands & Tools
 
-- `/daily_summary_command [YYYY-MM-DD]`
-  用户手动触发指定日期的总结（默认为今天）。
-  Manually trigger a summary for a specific date (defaults to today).
+### 🛠️ 指令列表 / Commands
+| 指令 | 参数 | 说明 |
+| :--- | :--- | :--- |
+| `/daily_summary_command` | `[YYYY-MM-DD]` | 手动触发指定日期的总结（默认为今天） |
+| `/recall_memory_command` | `[text] [count]` | 根据输入文本手动搜索相关记忆 |
+| `/recall_node_command` | `[name]` | 搜索特定的记忆节点 |
+| `/recall_event_reflection_command` | `[event_id]` | 获取特定事件的深度观察和感想 |
+| `/recall_daily_reflection_command` | `[YYYY-MM-DD]` | 获取特定日期的每日自由心得 |
+| `/write_node` | `[名] [类] [述]` | 手动写入或更新记忆节点 |
+| `/extract_chat_history_command` | `[YYYY-MM-DD]` | 从数据库提取指定日期的聊天记录（维护用） |
+| `/update_nodes_command` | `[YYYY-MM-DD]` | 从已有事件中重新提取记忆节点（维护用） |
+| `/vectorize_events` | `[YYYY-MM-DD]` | 将指定日期的事件重新向量化（维护用） |
 
-  - Tool: `daily_summary_tool [YYYY-MM-DD]`
-    AI手动触发指定日期的总结（默认为今天）。
-
-- `/recall_memory_command [text] [count]`
-  用户根据输入文本手动搜索相关记忆。
-  Manually search for relevant memories based on input text.
-
-  - Tool: `recall_memory_tool [text] [count]`
-    AI根据输入它自己输入文本手动搜索相关记忆，信息返回给AI。
-
-- `/recall_node_command [name]`
-  搜索特定的记忆节点（人物、地点或概念）。
-  Search for a specific memory node (person, place, or concept).
-
-  - Tool: `recall_node_command [name]`
-    AI根据它自己输入的关键词搜索特定的记忆节点（人物、地点或概念），信息返回给AI。
-
-- `/extract_chat_history_command [YYYY-MM-DD]`
-  手动从数据库提取指定日期的聊天记录。本指令通常不需要使用。
-  Manually extract chat history for a specific date from the database.
-
-- `/update_nodes_command [YYYY-MM-DD]`
-  从指定日期的已有事件中提取记忆节点，无需重新总结。本指令通常不需要使用。
-  Extract memory nodes from existing events of a specific date without re-summarizing.
-
-- `/vectorize_events [YYYY-MM-DD]`
-  将指定日期的事件向量化并存入向量数据库。本指令通常不需要使用。
-  Vectorize events of a specific date and store them in the vector database.
+### 🧰 工具列表 / LLM Tools
+| 工具名称 | 参数 | 说明 |
+| :--- | :--- | :--- |
+| `daily_summary_tool` | `date` | AI 触发指定日期的总结 |
+| `recall_memory_tool` | `query, count` | AI 检索最相关的事件记忆 |
+| `recall_node_tool` | `name` | AI 搜索特定的实体或概念背景 |
+| `recall_event_reflection_tool` | `event_id` | AI 回想特定事件的深度细节和心理活动 |
+| `recall_daily_reflection_tool` | `date` | AI 回想特定日期的整体心境 |
 ---
 
 人类使用command范例如下（第一句这对吗？？？）
@@ -138,7 +134,7 @@ To use this plugin, you must perform the first three steps!
   Recall retrieval considers semantic relevance, event importance, emotional intensity, and time decay weights. Dynamically calculates keyword importance within the search results to prioritize rare terms.
 
 - **AI 主动回忆工具 / Active Recall Tools**
-  提供 `recall_node_tool` 和 `recall_memory_tool`，使 AI 能够根据对话需要主动进行背景查询和往事联想。
+  提供多种recall工具，使 AI 能够根据对话需要主动进行背景查询和往事联想。
   Provides `recall_node_tool` and `recall_memory_tool`, enabling the AI to actively perform background queries and associations based on conversation needs.
 
 提醒：对于跨会话内容，在当天结束之前，由于没做每日总结，AI是无法知道隔壁群发生了什么的。但是一旦进行过每日总结，就能记起来啦！
