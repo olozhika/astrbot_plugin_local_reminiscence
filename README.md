@@ -14,6 +14,7 @@ A lightweight local memory plugin for AstrBot that uses local embedding models a
 1. **优化每日总结逻辑**：将总结过程拆分为“事件+感悟”提取与“记忆节点”提取两个独立阶段，显著提升对话数较多时的总结质量。
 2. **新增事件感想**：事件的深度感想（reflection）现在会在第一阶段与事件叙述同步生成，增强了记忆深度。
 3. **完善指令集**：新增了查看事件深度感想和每日感悟的指令及工具。
+4. **深度联想鼓励**：增加了可选的prompt鼓励AI利用recall工具进行深度回想和发散性联想。此功能默认关闭。
 
 <details>
 <summary>点击展开更早版本更新说明</summary>
@@ -133,7 +134,7 @@ To use this plugin, you must perform the first three steps!
   Recall retrieval considers semantic relevance, event importance, emotional intensity, and time decay weights. Dynamically calculates keyword importance within the search results to prioritize rare terms.
 
 - **AI 主动回忆工具 / Active Recall Tools**
-  提供 `recall_node_tool` 和 `recall_memory_tool`，使 AI 能够根据对话需要主动进行背景查询和往事联想。
+  提供多种recall工具，使 AI 能够根据对话需要主动进行背景查询和往事联想。
   Provides `recall_node_tool` and `recall_memory_tool`, enabling the AI to actively perform background queries and associations based on conversation needs.
 
 提醒：对于跨会话内容，在当天结束之前，由于没做每日总结，AI是无法知道隔壁群发生了什么的。但是一旦进行过每日总结，就能记起来啦！
