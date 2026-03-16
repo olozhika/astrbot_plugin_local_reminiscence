@@ -14,9 +14,11 @@ from astrbot.api.provider import ProviderRequest
 from astrbot.core.conversation_mgr import Conversation
 from .database import MemoryDB
 from .summarizer import DailySummarizer
-from .vector_db import VectorDB
 from .chat_history_extract import clean_dialogue_with_different_limits
 import random
+import shutil
+import subprocess
+import sys
 
 @register("local_reminiscence", "olozhika", "本地记忆插件，包含每日总结工具", "1.1.2")
 class LocalReminiscencePlugin(Star):
@@ -24,6 +26,31 @@ class LocalReminiscencePlugin(Star):
         super().__init__(context)
         self.context = context
         self.config = config if config else {}
+
+        # 动态检测并安装 torch (CPU版)
+        try:
+            import torch
+            import sentence_transformers
+            import chromadb
+            logger.info("[APLR] 已检测到 AI 相关依赖，跳过安装。")
+        except ImportError:
+            logger.info("[APLR] 未检测到 AI 依赖，正在后台安装 CPU 版 torch 及相关库 (这可能需要几分钟)...")
+            try:
+                # 1. 先安装 torch CPU 版
+                subprocess.check_call([
+                    sys.executable, "-m", "pip", "install", "torch", 
+                    "--index-url", "https://download.pytorch.org/whl/cpu"
+                ])
+                # 2. 再安装 sentence-transformers 和 chromadb
+                subprocess.check_call([
+                    sys.executable, "-m", "pip", "install", "sentence-transformers", "chromadb"
+                ])
+                logger.info("[APLR] AI 依赖安装成功！")
+            except Exception as e:
+                logger.error(f"[APLR] AI 依赖安装失败: {e}")
+        
+        # 在确保 torch 可能已安装后，再导入依赖 torch 的模块
+        from .vector_db import VectorDB
         
         # 获取配置项
         dialog_folder_rel = self.config.get("dialog_folder", "APLR_chat_history")
@@ -750,7 +777,8 @@ class LocalReminiscencePlugin(Star):
         found_any = False
         
         for target_user_id in self.target_user_id_list:
-            dialog_file = self.dialog_folder / f"{date_str}_dialog_{target_user_id}.json"
+            safe_id = target_user_id.replace(":", "_")
+            dialog_file = self.dialog_folder / f"{date_str}_dialog_{safe_id}.json"
             if not dialog_file.exists():
                 # 如果没找到，尝试提取一次（可能是补录历史记录）
                 try:
@@ -769,7 +797,7 @@ class LocalReminiscencePlugin(Star):
                 
                 # 提取后再检查一次
                 if not dialog_file.exists():
-                    logger.info(f"[APLR] 没找到 {date_str} ({target_user_id}) 的聊天记录")
+                    logger.info(f"[APLR] 没找到 {date_str} ({target_user_id}) 的聊天记录，尝试路径: {dialog_file}")
                     continue
 
             # 读取聊天记录
@@ -861,10 +889,35 @@ class LocalReminiscencePlugin(Star):
                 logger.error(f"[APLR] 自动向量化失败: {ve}")
 
             # 构建回复
-            resp = f"✨ {date_str} 的回忆整理好啦！\n\n"
-            resp += f"💭 我的感悟：{summary.daily_reflection}\n"
+            yield event.plain_result(f"✨ {date_str} 的回忆整理好啦！\n\n")
+            resp = f"💭 我的感悟：{summary.daily_reflection}\n"
             resp += f"📍 我记下了 {len(summary.events)} 个印象深刻的瞬间。"
             yield event.plain_result(resp)
         except Exception as e:
             logger.exception("存入数据库失败")
             yield event.plain_result(f"[APLR] 虽然想起来了，但没能存进记忆库：{e}")
+
+    async def terminate(self):
+        """默认不开启: 当插件被卸载/停用时调用，清理模型缓存和向量数据库。不会删除记忆db文件。"""
+        if 0: 
+            # 1. 清理向量数据库目录
+            if hasattr(self, 'vector_db_path') and self.vector_db_path.exists():
+                try:
+                    shutil.rmtree(self.vector_db_path)
+                    logger.info(f"[APLR] 已清理向量数据库目录: {self.vector_db_path}")
+                except Exception as e:
+                    logger.error(f"[APLR] 清理向量数据库目录失败: {e}")
+
+            # 2. 尝试清理模型缓存 (针对 sentence-transformers)
+            try:
+                embedding_model = self.config.get("embedding_model", "paraphrase-multilingual-MiniLM-L12-v2")
+                # 默认路径通常在 ~/.cache/torch/sentence_transformers/
+                model_cache_base = Path.home() / '.cache' / 'torch' / 'sentence_transformers'
+                # sentence-transformers 存储路径通常是模型名的下划线替换版本
+                model_name_path = model_cache_base / embedding_model.replace("/", "_")
+                
+                if model_name_path.exists():
+                    shutil.rmtree(model_name_path)
+                    logger.info(f"[APLR] 已清理向量化模型缓存: {model_name_path}")
+            except Exception as e:
+                logger.error(f"[APLR] 清理向量化模型缓存失败: {e}")
