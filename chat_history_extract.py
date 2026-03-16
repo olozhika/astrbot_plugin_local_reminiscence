@@ -200,7 +200,8 @@ def clean_dialogue_with_different_limits(
         if not messages:
             continue
         
-        suffix = f"_{target_user_id}" if target_user_id else ""
+        safe_user_id = target_user_id.replace(":", "_") if target_user_id else ""
+        suffix = f"_{safe_user_id}" if safe_user_id else ""
         output_txt = output_dir / f"{date_key}_dialog{suffix}.txt"
         output_json = output_dir / f"{date_key}_dialog{suffix}.json"
 
