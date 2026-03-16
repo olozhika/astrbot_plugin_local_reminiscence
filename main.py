@@ -777,7 +777,7 @@ class LocalReminiscencePlugin(Star):
         found_any = False
         
         for target_user_id in self.target_user_id_list:
-            safe_id = target_user_id.replace(":", "_")
+            safe_id = target_user_id.replace(":", "_") if target_user_id else ""
             dialog_file = self.dialog_folder / f"{date_str}_dialog_{safe_id}.json"
             if not dialog_file.exists():
                 # 如果没找到，尝试提取一次（可能是补录历史记录）
