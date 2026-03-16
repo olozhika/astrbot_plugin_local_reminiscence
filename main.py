@@ -20,7 +20,7 @@ import shutil
 import subprocess
 import sys
 
-@register("local_reminiscence", "olozhika", "本地记忆插件，包含每日总结工具", "1.1.2")
+@register("local_reminiscence", "olozhika", "本地记忆插件，包含每日总结工具", "1.1.3")
 class LocalReminiscencePlugin(Star):
     def __init__(self, context: Context, config: any = None):
         super().__init__(context)
