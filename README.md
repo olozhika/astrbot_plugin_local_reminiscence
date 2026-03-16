@@ -12,7 +12,7 @@ A lightweight local memory plugin for AstrBot that uses local embedding models a
 
 1. 优化聊天文件名称，避免windows系统报错
 2. 优化安装本插件时的依赖加载方式，有效避免部分设备自动下载巨大的无用CUDA包
-3. 设置增加离线加载模式，开启后可节省Astrbot启动时间
+3. 设置增加离线加载模式，开启后可节省（一点点）Astrbot启动时间
 
 ### 老用户升级（新用户请往下翻!）
 
