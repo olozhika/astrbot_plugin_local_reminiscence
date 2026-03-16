@@ -65,12 +65,13 @@ To use this plugin, you must perform the first three steps!
 
 
 1.  **下载安装 / Installation**
-    - 从Astrbot插件市场搜索下载此插件
+    - (可选)下载本repo，进入相应文件夹，在和你的astrbot同环境的命令行里运行`python install.py` [为了免于下载7个G的无用CUDA]
+    - 手动安装 或 从Astrbot插件市场搜索下载此插件
     - 注意第一次下载本插件时需要有办法（魔法）链接至HuggingFace以便下载模型！只要本插件成功启动过一次就不用魔法了！
     - 下载时会自动安装依赖，可能需要等一会，您可以趁此机会休息约10分钟（尴尬目移...）
     - 依赖和模型加一起大概1-2G
 
-2.  **配置插件 / Configuration**:
+3.  **配置插件 / Configuration**:
     - 设置目标会话ID列表用于识别对话，`target_user_id_list` 格式为 `["机器人ID:会话类型:会话ID", ...]`，相关对话会用于每日总结
       - 这个格式也就是 Astrbot-更多功能-对话数据-消息对话来源 的三项内容，群聊会话类型为 GroupMessage，私聊为 FriendMessage
       - 也可以在聊天内执行指令`/sid`查询会话ID
@@ -79,12 +80,12 @@ To use this plugin, you must perform the first three steps!
     - 设置 AI 名称，这是在 AI 的记忆中它使用的名字
     - 其他配置不太重要，有需要就改
 
-3.  **设置每日总结 / Daily Summary**
+4.  **设置每日总结 / Daily Summary**
     - 定时任务方式：比如你每天通常在晚上11点50关机，就告诉你的AI“设一个定时任务，每天晚上11点45使用工具daily_summary_tool，日期参数写当天日期”（具体表述随意）
     - 手动触发方式：每天晚上关机前在AI聊天框输入 /daily_summary_command YYYY-MM-DD (此处日期是今日日期)
     - 上面两种方式二选一
 
-4.  [可选] **向记忆数据库中导入过往聊天记录**
+5.  [可选] **向记忆数据库中导入过往聊天记录**
     - 使用指令`/daily_summary_command [YYYY-MM-DD]` 依次补录相应日期记忆。所以即使你刚刚下载本插件，但已经和一个AI聊了很长时间（而且没删Astrbot中的对话数据），你可以用此指令把它们统统依次补录！该指令会自动找到全部该日聊天记录，进行整理总结，向量化重要事件，并更新记忆节点。
 
 6.  [可选] **系统prompt额外提醒 / Add in system_prompt**
