@@ -73,6 +73,7 @@ class LocalReminiscencePlugin(Star):
         self.username = self.config.get("username", "olozhika")
         self.ai_name = self.config.get("ai_name", "Lanya")
         embedding_model = self.config.get("embedding_model", "paraphrase-multilingual-MiniLM-L12-v2")
+        offline_mode = self.config.get("offline_mode", False)
 
         # 确保目录存在
         self.dialog_folder.mkdir(parents=True, exist_ok=True)
@@ -81,7 +82,7 @@ class LocalReminiscencePlugin(Star):
 
         # 初始化数据库
         self.db = MemoryDB(str(self.db_path))
-        self.vector_db = VectorDB(str(self.vector_db_path), model_name=embedding_model)
+        self.vector_db = VectorDB(str(self.vector_db_path), model_name=embedding_model, offline_mode=offline_mode)
 
     @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
