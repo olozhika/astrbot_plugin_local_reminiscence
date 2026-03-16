@@ -17,10 +17,22 @@
     "hint": "存放 ChromaDB 向量数据库的路径。相对于插件数据目录的路径。",
     "default": "APLR_VectorDB"
   },
+  "embedding_model": {
+    "description": "向量化模型名称",
+    "type": "string",
+    "hint": "用于向量化的 SentenceTransformer 模型名称。注意，修改此项后第一次加载时网络需要能够访问HuggingFace。",
+    "default": "paraphrase-multilingual-MiniLM-L12-v2"
+  },
+  "offline_mode": {
+    "description": "离线加载模式",
+    "type": "bool",
+    "hint": "开启后将强制只读本地模型缓存，彻底避免启动时联网检查。请在确认本插件已正常运行过一次后再开启。",
+    "default": false
+  },
   "target_user_id_list": {
     "description": "目标会话 ID 列表",
     "type": "list",
-    "hint": "要提取聊天记录的目标会话 ID 列表 (例如 [\"Lanya_QQ:FriendMessage:947628188\"])。",
+    "hint": "要提取聊天记录的目标会话ID列表, 可用 sid 指令获取当前对话ID。",
     "default": ["Lanya_QQ:FriendMessage:947628188"]
   },
   "username": {
@@ -52,12 +64,6 @@
     "type": "int",
     "hint": "从排序后的事件中另选择随机__个事件返回。",
     "default": 2
-  },
-  "embedding_model": {
-    "description": "向量化模型名称",
-    "type": "string",
-    "hint": "用于向量化的 SentenceTransformer 模型名称。注意，本插件在第一次加载时网络需要能够访问HuggingFace。",
-    "default": "paraphrase-multilingual-MiniLM-L12-v2"
   },
   "auto_recall_probability": {
     "description": "自动触发记忆检索概率",
