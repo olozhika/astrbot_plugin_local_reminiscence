@@ -1,11 +1,17 @@
 import chromadb
+import os
 from sentence_transformers import SentenceTransformer
 from pathlib import Path
 from typing import List, Dict
 
 class VectorDB:
-    def __init__(self, db_path: str, model_name: str = 'paraphrase-multilingual-MiniLM-L12-v2'):
+    def __init__(self, db_path: str, model_name: str = 'paraphrase-multilingual-MiniLM-L12-v2', offline_mode: bool = False):
         self.db_path = db_path
+        
+        if offline_mode:
+            os.environ["TRANSFORMERS_OFFLINE"] = "1"
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            
         # 显式配置 Settings，增加一些稳定性
         self.client = chromadb.PersistentClient(
             path=str(db_path),
