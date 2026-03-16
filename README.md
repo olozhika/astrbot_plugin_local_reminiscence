@@ -8,16 +8,22 @@ A lightweight local memory plugin for AstrBot that uses local embedding models a
 
 (另：如果你想把这个插件改成适配其他平台的插件，应该只要改main.py就好了)
 
+### 🔄 更新说明 / Update Log (v1.1.3)
 
-## 🔄 更新说明 / Update Log (v1.1.2)
+1. 优化聊天文件名称，避免windows系统报错
+2. 优化安装本插件时的依赖加载方式，有效避免部分设备自动下载巨大的无用CUDA包
+
+
+<details>
+<summary>点击展开更早版本更新说明</summary>
+
+### 🔄 小更新说明 (v1.1.2)
 
 1. **优化每日总结逻辑**：将总结过程拆分为“事件+感悟”提取与“记忆节点”提取两个独立阶段，显著提升对话数较多时的节点更新质量。
 2. **新增事件感想**：事件的深度感想（reflection）现在会在第一阶段与事件叙述同步生成，增强了记忆深度。
 3. **完善指令集**：新增了查看事件深度感想和每日感悟的指令及工具。
 4. **深度联想鼓励**：增加了可选的prompt鼓励AI利用recall工具进行深度回想和发散性联想。此功能默认关闭。
 
-<details>
-<summary>点击展开更早版本更新说明</summary>
 
 ### 🔄 小更新说明 (v1.1.1)
 
@@ -65,7 +71,6 @@ To use this plugin, you must perform the first three steps!
 
 
 1.  **下载安装 / Installation**
-    - (可选但推荐)下载本repo，进入相应文件夹，在和你的astrbot同环境的命令行里运行`python install.py` [为了免于下载7个G的无用CUDA]
     - 手动安装 或 从Astrbot插件市场搜索下载此插件
     - 注意第一次下载本插件时需要有办法（魔法）链接至HuggingFace以便下载模型！只要本插件成功启动过一次就不用魔法了！
     - 下载时会自动安装依赖，可能需要等一会，您可以趁此机会休息约10分钟（尴尬目移...）
