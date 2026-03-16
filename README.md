@@ -14,11 +14,11 @@ A lightweight local memory plugin for AstrBot that uses local embedding models a
 2. 优化安装本插件时的依赖加载方式，有效避免部分设备自动下载巨大的无用CUDA包
 3. 设置增加离线加载模式，开启后可节省Astrbot启动时间
 
-### 老用户升级
+### 老用户升级（新用户请往下翻!）
 
 1. 如果你已经成功运行过本插件，可以到 插件设置 开启 离线加载模式（可以省Astrbot启动时间）
 
-2. 如果你还有计划对升级以前输出的json聊天文件进行补充操作（比如重新运行daily summary），请进到本插件chat_history所在文件夹，把所有名称带:的文件的冒号改成_。比如在命令行中执行`for f in *:* ; do [ -e "$f" ] && mv -v "$f" "${f//:/_}" ; done` [注意是在chat_history所在文件夹内的终端中运行！]
+2. (一般不需要)如果你还有计划对升级以前输出的json聊天文件进行补充操作（比如重新运行daily summary），请进到本插件chat_history所在文件夹，把所有名称带:的文件的冒号改成_。比如在命令行中执行`for f in *:* ; do [ -e "$f" ] && mv -v "$f" "${f//:/_}" ; done` [注意是在chat_history所在文件夹内的终端中运行！]
 
 （一般来说并不需要对曾经的json聊天文件进行补充操作）
 
@@ -86,7 +86,7 @@ To use this plugin, you must perform the first three steps!
     - 下载时会自动安装依赖，可能需要等一会，您可以趁此机会休息约10分钟（尴尬目移...）
     - 依赖和模型加一起大概1-2G
 
-3.  **配置插件 / Configuration**:
+2.  **配置插件 / Configuration**:
     - 设置目标会话ID列表用于识别对话，`target_user_id_list` 格式为 `["机器人ID:会话类型:会话ID", ...]`，相关对话会用于每日总结
       - 这个格式也就是 Astrbot-更多功能-对话数据-消息对话来源 的三项内容，群聊会话类型为 GroupMessage，私聊为 FriendMessage
       - 也可以在聊天内执行指令`/sid`查询会话ID
@@ -95,17 +95,20 @@ To use this plugin, you must perform the first three steps!
     - 设置 AI 名称，这是在 AI 的记忆中它使用的名字
     - 其他配置不太重要，有需要就改
 
-4.  **设置每日总结 / Daily Summary**
+3.  **设置每日总结 / Daily Summary**
     - 定时任务方式：比如你每天通常在晚上11点50关机，就告诉你的AI“设一个定时任务，每天晚上11点45使用工具daily_summary_tool，日期参数写当天日期”（具体表述随意）
     - 手动触发方式：每天晚上关机前在AI聊天框输入 /daily_summary_command YYYY-MM-DD (此处日期是今日日期)
     - 上面两种方式二选一
 
-5.  [可选] **向记忆数据库中导入过往聊天记录**
+4.  [可选] **向记忆数据库中导入过往聊天记录**
     - 使用指令`/daily_summary_command [YYYY-MM-DD]` 依次补录相应日期记忆。所以即使你刚刚下载本插件，但已经和一个AI聊了很长时间（而且没删Astrbot中的对话数据），你可以用此指令把它们统统依次补录！该指令会自动找到全部该日聊天记录，进行整理总结，向量化重要事件，并更新记忆节点。
 
-6.  [可选] **系统prompt额外提醒 / Add in system_prompt**
+5.  [可选] **系统prompt额外提醒 / Add in system_prompt**
     - 如果你的AI平时傻傻的想不起来调用工具，可以考虑在人设文本里加一句“你可以使用recall_memory_tool工具回忆与输入文本相关的记忆，可以使用recall_node_tool工具回忆特定概念”
     - 如果你的AI很聪明，或者不需要它经常调用工具就不用啦，本插件本来也有自动回忆功能的！
+
+6. [可选] **开启离线加载模式**
+    - 在确认本插件已经成功加载后，可以到插件设置中开启离线加载模式，将节省部分网络情况下Astrbot启动时本插件加载所需时间。
 
 ---
 
