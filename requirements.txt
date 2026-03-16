@@ -1,11 +1,7 @@
-# 向量数据库（必需）
-chromadb
-
-# 语义向量化模型（必需）
-sentence-transformers
-
 # 数据模型校验（必需）
 pydantic
 
 # 中文分词（推荐）
 jieba
+
+#其他依赖会在插件第一次加载时自动检测安装
