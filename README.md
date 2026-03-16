@@ -65,7 +65,7 @@ To use this plugin, you must perform the first three steps!
 
 
 1.  **下载安装 / Installation**
-    - (可选)下载本repo，进入相应文件夹，在和你的astrbot同环境的命令行里运行`python install.py` [为了免于下载7个G的无用CUDA]
+    - (可选但推荐)下载本repo，进入相应文件夹，在和你的astrbot同环境的命令行里运行`python install.py` [为了免于下载7个G的无用CUDA]
     - 手动安装 或 从Astrbot插件市场搜索下载此插件
     - 注意第一次下载本插件时需要有办法（魔法）链接至HuggingFace以便下载模型！只要本插件成功启动过一次就不用魔法了！
     - 下载时会自动安装依赖，可能需要等一会，您可以趁此机会休息约10分钟（尴尬目移...）
