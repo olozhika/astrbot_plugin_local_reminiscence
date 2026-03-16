@@ -201,8 +201,8 @@ def clean_dialogue_with_different_limits(
             continue
         
         safe_user_id = target_user_id.replace(":", "_") if target_user_id else ""
-        output_txt = output_dir / f"{date_key}_dialog_{suffix}.txt"
-        output_json = output_dir / f"{date_key}_dialog_{suffix}.json"
+        output_txt = output_dir / f"{date_key}_dialog_{safe_user_id}.txt"
+        output_json = output_dir / f"{date_key}_dialog_{safe_user_id}.json"
 
         with open(output_txt, "w", encoding="utf-8") as f:
             f.write("\n".join(daily_txt[date_key]))
