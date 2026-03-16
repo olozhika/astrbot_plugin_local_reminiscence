@@ -11,6 +11,9 @@ class VectorDB:
         if offline_mode:
             os.environ["TRANSFORMERS_OFFLINE"] = "1"
             os.environ["HF_HUB_OFFLINE"] = "1"
+        else: 
+            os.environ.pop("TRANSFORMERS_OFFLINE", None)
+            os.environ.pop("HF_HUB_OFFLINE", None)
             
         # 显式配置 Settings，增加一些稳定性
         self.client = chromadb.PersistentClient(
@@ -21,7 +24,7 @@ class VectorDB:
             )
         )
         self.collection = self.client.get_or_create_collection(name="events")
-        self.model = SentenceTransformer(model_name)
+        self.model = SentenceTransformer(model_name,local_files_only=offline_mode)
 
     def add_events(self, events: List[Dict]):
         """将事件向量化并存入 ChromaDB"""
