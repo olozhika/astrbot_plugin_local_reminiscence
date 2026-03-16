@@ -8,10 +8,16 @@ A lightweight local memory plugin for AstrBot that uses local embedding models a
 
 (另：如果你想把这个插件改成适配其他平台的插件，应该只要改main.py就好了)
 
-### 🔄 更新说明 / Update Log (v1.1.3)
+## 🔄 更新说明 / Update Log (v1.1.3)
 
 1. 优化聊天文件名称，避免windows系统报错
 2. 优化安装本插件时的依赖加载方式，有效避免部分设备自动下载巨大的无用CUDA包
+
+### 老用户升级
+
+如果你还有计划对升级以前输出的json聊天文件进行补充操作（比如重新运行daily summary），请进到本插件chat_history所在文件夹，把所有名称带:的文件的冒号改成_。比如在命令行中执行`for f in *:* ; do [ -e "$f" ] && mv -v "$f" "${f//:/_}" ; done` [注意是在chat_history所在文件夹内的终端中运行！]
+
+（一般来说并不需要对曾经的json聊天文件进行补充操作，所以基本什么都不用做）
 
 
 <details>
