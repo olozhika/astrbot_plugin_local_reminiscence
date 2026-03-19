@@ -32,7 +32,7 @@
   "embedding_cache_dir": {
     "description": "Embedding 模型缓存目录",
     "type": "string",
-    "hint": "模型下载缓存目录。相对路径会基于插件数据目录解析；同一模型下次可离线复用。",
+    "hint": "模型下载缓存目录。系统默认地址没有模型时使用。相对路径会基于插件数据目录解析；同一模型下次可离线复用。",
     "default": "APLR_ModelCache"
   },
   "embedding_trust_remote_code": {
@@ -44,7 +44,7 @@
   "offline_mode": {
     "description": "离线模式",
     "type": "bool",
-    "hint": "开启后将强制只读本地模型缓存，彻底避免联网检查（包括 ChromaDB 遥测和 HuggingFace 下载）。请在确认本插件已正常运行过一次且模型已下载后再开启。",
+    "hint": "开启后将强制只读本地模型缓存，彻底避免联网检查（包括 ChromaDB 遥测和 HuggingFace 下载）。请在确认本插件已正常运行过一次且安装的其他插件都不需要连接HuggingFace时再开启。",
     "default": false
   },
   "target_user_id_list": {
