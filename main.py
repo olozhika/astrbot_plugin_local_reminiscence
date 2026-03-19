@@ -20,12 +20,37 @@ import shutil
 import subprocess
 import sys
 
-@register("local_reminiscence", "olozhika", "本地记忆插件，包含每日总结工具", "1.1.3")
+@register("local_reminiscence", "olozhika", "本地记忆插件，包含每日总结工具", "1.1.4")
 class LocalReminiscencePlugin(Star):
     def __init__(self, context: Context, config: any = None):
         super().__init__(context)
         self.context = context
         self.config = config if config else {}
+
+        # 预先获取离线模式和镜像设置，确保后续操作（包括依赖检查）尊重这些设置
+        def to_bool(value, default=False):
+            if isinstance(value, bool):
+                return value
+            if value is None:
+                return default
+            if isinstance(value, str):
+                return value.strip().lower() in ["1", "true", "yes", "on"]
+            return bool(value)
+
+        self.offline_mode = to_bool(self.config.get("offline_mode", False))
+        self.hf_endpoint = self.config.get("hf_endpoint", "https://hf-mirror.com").strip()
+
+        if self.offline_mode:
+            os.environ["TRANSFORMERS_OFFLINE"] = "1"
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            os.environ.pop("HF_ENDPOINT", None)
+        else:
+            os.environ.pop("TRANSFORMERS_OFFLINE", None)
+            os.environ.pop("HF_HUB_OFFLINE", None)
+            if self.hf_endpoint:
+                os.environ["HF_ENDPOINT"] = self.hf_endpoint
+            else:
+                os.environ.pop("HF_ENDPOINT", None)
 
         # 动态检测并安装 torch (CPU版)
         try:
@@ -34,20 +59,25 @@ class LocalReminiscencePlugin(Star):
             import chromadb
             logger.info("[APLR] 已检测到 AI 相关依赖，跳过安装。")
         except ImportError:
-            logger.info("[APLR] 未检测到 AI 依赖，正在后台安装 CPU 版 torch 及相关库 (这可能需要几分钟)...")
-            try:
-                # 1. 先安装 torch CPU 版
-                subprocess.check_call([
-                    sys.executable, "-m", "pip", "install", "torch", 
-                    "--index-url", "https://download.pytorch.org/whl/cpu"
-                ])
-                # 2. 再安装 sentence-transformers 和 chromadb
-                subprocess.check_call([
-                    sys.executable, "-m", "pip", "install", "sentence-transformers", "chromadb"
-                ])
-                logger.info("[APLR] AI 依赖安装成功！")
-            except Exception as e:
-                logger.error(f"[APLR] AI 依赖安装失败: {e}")
+            if self.offline_mode:
+                logger.warning("[APLR] 离线模式已开启，但未检测到 AI 依赖。请先关闭离线模式以安装依赖。")
+            else:
+                logger.info("[APLR] 未检测到 AI 依赖，正在后台安装 CPU 版 torch 及相关库 (这可能需要几分钟)...")
+                try:
+                    # 1. 先安装 torch CPU 版
+                    subprocess.check_call([
+                        sys.executable, "-m", "pip", "install", "torch", 
+                        "--index-url", "https://download.pytorch.org/whl/cpu"
+                    ])
+                    # 2. 再安装 sentence-transformers 和 chromadb
+                    pip_cmd = [sys.executable, "-m", "pip", "install", "sentence-transformers", "chromadb"]
+                    if self.hf_endpoint:
+                        # 如果配置了 hf_endpoint (通常是境内镜像)，则使用国内 PyPI 镜像加速依赖安装
+                        pip_cmd.extend(["-i", "https://pypi.tuna.tsinghua.edu.cn/simple"])
+                    subprocess.check_call(pip_cmd)
+                    logger.info("[APLR] AI 依赖安装成功！")
+                except Exception as e:
+                    logger.error(f"[APLR] AI 依赖安装失败: {e}")
         
         # 在确保 torch 可能已安装后，再导入依赖 torch 的模块
         from .vector_db import VectorDB
@@ -73,16 +103,30 @@ class LocalReminiscencePlugin(Star):
         self.username = self.config.get("username", "olozhika")
         self.ai_name = self.config.get("ai_name", "Lanya")
         embedding_model = self.config.get("embedding_model", "paraphrase-multilingual-MiniLM-L12-v2")
-        offline_mode = self.config.get("offline_mode", False)
+        embedding_cache_dir_rel = self.config.get("embedding_cache_dir", "APLR_ModelCache")
+
+        embedding_trust_remote_code = to_bool(self.config.get("embedding_trust_remote_code", False))
+        embedding_cache_dir = None
+        if embedding_cache_dir_rel:
+            embedding_cache_dir = resolve_path(embedding_cache_dir_rel, data_dir)
 
         # 确保目录存在
         self.dialog_folder.mkdir(parents=True, exist_ok=True)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.vector_db_path.mkdir(parents=True, exist_ok=True)
+        if embedding_cache_dir:
+            embedding_cache_dir.mkdir(parents=True, exist_ok=True)
 
         # 初始化数据库
         self.db = MemoryDB(str(self.db_path))
-        self.vector_db = VectorDB(str(self.vector_db_path), model_name=embedding_model, offline_mode=offline_mode)
+        self.vector_db = VectorDB(
+            str(self.vector_db_path),
+            model_name=embedding_model,
+            model_cache_dir=str(embedding_cache_dir) if embedding_cache_dir else None,
+            hf_endpoint=self.hf_endpoint,
+            trust_remote_code=embedding_trust_remote_code,
+            offline_mode=self.offline_mode
+        )
 
     @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
@@ -448,11 +492,11 @@ class LocalReminiscencePlugin(Star):
         """根据输入文本从你的长期记忆中检索最相关的事件。当你需要回忆过去发生的事情时使用。
         
         Args:
-            query(string): 检索关键词或描述。
-            count(int): 期望获得的条数（可选，默认为0，设为0时使用系统默认值）。
+            query(string): 文本描述。
+            count(int): 返回条数（可选，默认为系统默认值）。
         """
         if not query:
-            return "错误：请提供检索内容。"
+            return "错误：需要提供检索关键词query"
         
         return await self._get_memory_retrieval_text(query, count=count if count > 0 else None)
 
@@ -463,6 +507,8 @@ class LocalReminiscencePlugin(Star):
         Args:
             event_id(string): 事件的唯一ID（如 evt_20260312_001）。
         """
+        if not event_id:
+            return "错误：需要提供事件ID event_id。"
         return await self._get_event_reflection_logic(event_id)
 
     async def _get_event_reflection_logic(self, event_id: str) -> str:
@@ -486,6 +532,8 @@ class LocalReminiscencePlugin(Star):
         Args:
             date(string): 日期，格式为 YYYY-MM-DD。
         """
+        if not date:
+            return "错误：需要提供日期 date。"
         return await self._get_daily_reflection_logic(date)
 
     async def _get_daily_reflection_logic(self, date: str) -> str:
@@ -778,32 +826,11 @@ class LocalReminiscencePlugin(Star):
         found_any = False
         
         for target_user_id in self.target_user_id_list:
-            safe_id = target_user_id.replace(":", "_") if target_user_id else ""
-            dialog_file = self.dialog_folder / f"{date_str}_dialog_{safe_id}.json"
-            if not dialog_file.exists():
-                # 如果没找到，尝试提取一次（可能是补录历史记录）
-                try:
-                    core_db_path = Path.cwd() / "data" / "data_v4.db"
-                    clean_dialogue_with_different_limits(
-                        db_path=core_db_path,
-                        output_dir=self.dialog_folder,
-                        username=self.username,
-                        ai_name=self.ai_name,
-                        platform="AstrBot",
-                        target_date=date_str,
-                        target_user_id=target_user_id
-                    )
-                except Exception as e:
-                    logger.error(f"提取聊天记录失败: {e}")
-                
-                # 提取后再检查一次
-                if not dialog_file.exists():
-                    logger.info(f"[APLR] 没找到 {date_str} ({target_user_id}) 的聊天记录，尝试路径: {dialog_file}")
-                    continue
-
-            # 读取聊天记录
+            file_path = self.dialog_folder / f"{date_str}_{target_user_id}.json"
+            if not file_path.exists():
+                continue
             try:
-                with open(dialog_file, 'r', encoding='utf-8') as f:
+                with open(file_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 conversations = data.get("conversations", [])
                 if conversations:
@@ -912,7 +939,7 @@ class LocalReminiscencePlugin(Star):
             # 2. 尝试清理模型缓存 (针对 sentence-transformers)
             try:
                 embedding_model = self.config.get("embedding_model", "paraphrase-multilingual-MiniLM-L12-v2")
-                # 默认路径通常在 ~/.cache/torch/sentence_transformers/
+                # 默认路径通常格在 ~/.cache/torch/sentence_transformers/
                 model_cache_base = Path.home() / '.cache' / 'torch' / 'sentence_transformers'
                 # sentence-transformers 存储路径通常是模型名的下划线替换版本
                 model_name_path = model_cache_base / embedding_model.replace("/", "_")
@@ -922,3 +949,23 @@ class LocalReminiscencePlugin(Star):
                     logger.info(f"[APLR] 已清理向量化模型缓存: {model_name_path}")
             except Exception as e:
                 logger.error(f"[APLR] 清理向量化模型缓存失败: {e}")
+
+    # --- 外部 API 接口 ---
+
+    def is_model_ready(self) -> bool:
+        """检查向量化模型是否已加载完成"""
+        return hasattr(self, 'vector_db') and self.vector_db is not None and hasattr(self.vector_db, 'model')
+
+    def get_embeddings(self, texts: List[str]) -> List[List[float]]:
+        """
+        供其他插件调用的 API：获取文本的向量表示。
+        
+        用法示例：
+        reminiscence = context.get_star("local_reminiscence")
+        if reminiscence and reminiscence.is_model_ready():
+            vectors = reminiscence.get_embeddings(["你好", "再见"])
+        """
+        if not self.is_model_ready():
+            logger.warning("[APLR] 有其他插件尝试调用 get_embeddings 但模型尚未就绪。")
+            return []
+        return self.vector_db.get_embeddings(texts)
