@@ -79,9 +79,9 @@ To use this plugin, you must perform the first three steps!
 
 
 1.  **下载安装 / Installation**
-    - 手动安装 或 从Astrbot插件市场搜索下载此插件
-    - 注意第一次下载本插件时需要有办法（魔法）链接至HuggingFace以便下载模型！只要本插件成功启动过一次就不用魔法了！
-    - 下载时会自动安装依赖，可能需要等一会，您可以趁此机会休息约10分钟（尴尬目移...）
+
+    - 从Astrbot插件市场搜索下载此插件
+    - 下载时会自动安装依赖，首次安装可能需要等待几分钟
     - 依赖和模型加一起大概1-2G
 
 2.  **配置插件 / Configuration**:
@@ -91,6 +91,8 @@ To use this plugin, you must perform the first three steps!
     - 插件会自动从 AstrBot 的用户识别功能中提取发送者昵称，请在 Astrbot-其他配置 开启官方的用户识别。如果该功能未开启，则会使用配置中指定的默认 `username`
       - 如果你希望让AI记住的用户名并不是你的ID，建议安装[统一昵称](https://github.com/Hakuin123/astrbot_plugin_uni_nickname)插件，并开启`system_replace`模式
     - 设置 AI 名称，这是在 AI 的记忆中它使用的名字
+    - 境内网络建议保留默认 `hf_endpoint=https://hf-mirror.com`
+    - 若你已提前下载模型，可将 `embedding_model` 改成本地目录，并开启 `embedding_local_files_only=true`
     - 其他配置不太重要，有需要就改
 
 3.  **设置每日总结 / Daily Summary**
@@ -108,7 +110,6 @@ To use this plugin, you must perform the first three steps!
 6. [可选] **开启离线加载模式**
     - 在确认本插件已经成功加载后，可以到插件设置中开启离线加载模式，将节省部分网络情况下Astrbot启动时本插件加载所需时间。
 
----
 
 ## ⌨️ 指令和工具 / Commands & Tools
 
