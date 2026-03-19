@@ -6,13 +6,21 @@
 
 A lightweight local memory plugin for AstrBot that uses local embedding models and local database storage to save and recall chat history. No API keys required, zero embedding costs, token-saving, and complete privacy protection. Automatically records conversations using Cron jobs, and helps AI automatically recall relevant experiences through deep learning semantic search.
 
-## 🔄 更新说明 / Update Log (v1.1.3)
+## 🔄 更新说明 / Update Log (v1.1.4)
+
+1. **境内网络全支持**，这下真的是点击即下载了，启动时也不会被网络卡住!感谢@murphys7017
+2. 本插件现可以提供（正在本地后台运行的这个）向量模型的API供其他插件调用（但大概目前没啥用）
+
+<details>
+<summary>点击展开更早版本更新说明</summary>
+
+### 🔄 小更新说明 / Update Log (v1.1.3)
 
 1. 优化聊天文件名称，避免windows系统报错
 2. 优化安装本插件时的依赖加载方式，有效避免部分设备自动下载巨大的无用CUDA包
 3. 设置增加离线加载模式，开启后可节省（一点点）Astrbot启动时间
 
-### 老用户升级（新用户请往下翻!）
+#### 老用户升级（新用户请往下翻!）
 
 1. 如果你已经成功运行过本插件，可以到 插件设置 开启 离线加载模式（可以省Astrbot启动时间）
 
@@ -21,8 +29,7 @@ A lightweight local memory plugin for AstrBot that uses local embedding models a
 （一般来说并不需要对曾经的json聊天文件进行补充操作）
 
 
-<details>
-<summary>点击展开更早版本更新说明</summary>
+
 
 ### 🔄 小更新说明 (v1.1.2)
 
