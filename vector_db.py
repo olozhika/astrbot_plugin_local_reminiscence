@@ -53,16 +53,60 @@ class VectorDB:
     ):
         # 延迟导入以确保环境变量已设置
         from sentence_transformers import SentenceTransformer
+        import torch
         
-        cache_dir = None
+        # 1. 探测系统默认路径 (System Default Cache)
+        # 通常是 ~/.cache/torch/sentence_transformers/
+        try:
+            default_torch_home = torch.hub._get_torch_home()
+            default_st_home = Path(default_torch_home) / 'sentence_transformers'
+        except Exception:
+            default_st_home = Path.home() / '.cache' / 'torch' / 'sentence_transformers'
+        
+        # 2. 探测插件自定义缓存路径 (Custom Cache Dir)
+        # 按照用户要求，如果没设置 model_cache_dir，我们也可以尝试从 db_path (即 vector_db_path) 找
+        custom_cache_dir = None
         if model_cache_dir:
-            cache_dir = str(Path(model_cache_dir).expanduser().resolve())
-            cache_path = Path(cache_dir)
-            cache_path.mkdir(parents=True, exist_ok=True)
-            os.environ.setdefault("HF_HOME", cache_dir)
-            os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(cache_path / "hub"))
-            os.environ.setdefault("TRANSFORMERS_CACHE", str(cache_path / "transformers"))
-            os.environ.setdefault("SENTENCE_TRANSFORMERS_HOME", str(cache_path / "sentence_transformers"))
+            custom_cache_dir = Path(model_cache_dir).expanduser().resolve()
+        else:
+            # 如果没设置模型缓存目录，尝试使用向量数据库目录作为备选
+            custom_cache_dir = Path(self.db_path).parent / "APLR_ModelCache"
+            
+        # 确保自定义目录存在
+        custom_cache_dir.mkdir(parents=True, exist_ok=True)
+
+        # 3. 构建候选路径列表 (Candidate Paths)
+        # 这里的逻辑是：如果 model_name 是个 ID，我们先去这些地方找找看有没有现成的文件夹
+        candidate_names = []
+        
+        # A. 检查是否是绝对路径或当前目录下存在的路径
+        if Path(model_name).exists():
+            candidate_names.append(str(Path(model_name).resolve()))
+
+        # B. 检查系统默认路径是否存在该模型
+        # 转换模型名为文件夹名 (通常是下划线替换斜杠)
+        safe_model_name = model_name.replace("/", "_")
+        if (default_st_home / safe_model_name).exists():
+            candidate_names.append(str(default_st_home / safe_model_name))
+        if (default_st_home / model_name).exists():
+            candidate_names.append(str(default_st_home / model_name))
+
+        # C. 检查自定义缓存路径是否存在该模型
+        if (custom_cache_dir / safe_model_name).exists():
+            candidate_names.append(str(custom_cache_dir / safe_model_name))
+        if (custom_cache_dir / model_name).exists():
+            candidate_names.append(str(custom_cache_dir / model_name))
+
+        # 4. 如果没找到现成的，我们准备下载。
+        # 在下载前，我们需要设置环境变量，告诉 SDK 往哪儿下。
+        # 按照用户要求，如果本地都没有，下载到 vector_db_path 相关的目录
+        # 这里我们统一使用 custom_cache_dir (它通常是 APLR_ModelCache)
+        # 如果你希望严格下载到 APLR_VectorDB 内部，可以将 custom_cache_dir 设为 self.db_path
+        
+        os.environ.setdefault("HF_HOME", str(custom_cache_dir))
+        os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(custom_cache_dir / "hub"))
+        os.environ.setdefault("TRANSFORMERS_CACHE", str(custom_cache_dir / "transformers"))
+        os.environ.setdefault("SENTENCE_TRANSFORMERS_HOME", str(custom_cache_dir / "sentence_transformers"))
 
         if hf_endpoint and not offline_mode:
             os.environ["HF_ENDPOINT"] = hf_endpoint
@@ -72,8 +116,8 @@ class VectorDB:
         model_kwargs = {
             "trust_remote_code": trust_remote_code
         }
-        if cache_dir:
-            model_kwargs["cache_folder"] = cache_dir
+        if custom_cache_dir:
+            model_kwargs["cache_folder"] = str(custom_cache_dir)
         if offline_mode:
             model_kwargs["local_files_only"] = True
 
@@ -81,8 +125,6 @@ class VectorDB:
             return SentenceTransformer(name, **model_kwargs)
 
         def _reset_hf_http_session():
-            # 某些 huggingface_hub/httpx 版本可能出现 "client has been closed"
-            # 尝试重置全局会话后重试一次
             try:
                 from huggingface_hub.utils import _http as hf_http  # type: ignore
                 reset_fn = getattr(hf_http, "reset_sessions", None)
@@ -91,51 +133,25 @@ class VectorDB:
             except Exception:
                 pass
 
-        candidate_names = []
-        # 1. 优先检查 model_name 是否为本地存在的绝对或相对路径
-        if Path(model_name).exists():
-            candidate_names.append(model_name)
-        
-        # 2. 检查 cache 目录下是否已经存在该模型（针对短名）
-        if cache_dir:
-            cache_path = Path(cache_dir)
-            if (cache_path / model_name).exists():
-                candidate_names.append(str(cache_path / model_name))
-            if (cache_path / f"sentence-transformers_{model_name}").exists():
-                candidate_names.append(str(cache_path / f"sentence-transformers_{model_name}"))
-            # 某些版本存储为 sentence-transformers/model_name
-            if (cache_path / "sentence-transformers" / model_name).exists():
-                candidate_names.append(str(cache_path / "sentence-transformers" / model_name))
-
-        # 3. 添加原始名称和补全名称作为备选（由 SDK 处理下载或缓存查找）
-        if model_name not in candidate_names:
-            candidate_names.append(model_name)
-        
-        if ("/" not in model_name) and (not Path(model_name).exists()):
-            full_name = f"sentence-transformers/{model_name}"
-            if full_name not in candidate_names:
-                candidate_names.append(full_name)
-
-        last_exc = None
-        for idx, candidate in enumerate(candidate_names):
+        # 5. 尝试加载
+        # 先试候选路径（本地已有的）
+        for candidate in candidate_names:
             try:
                 return _build_model(candidate)
-            except Exception as exc:
-                last_exc = exc
-                if "client has been closed" in str(exc).lower():
-                    _reset_hf_http_session()
-                    try:
-                        return _build_model(candidate)
-                    except Exception as exc2:
-                        last_exc = exc2
-                if idx < len(candidate_names) - 1:
-                    continue
-                break
+            except Exception:
+                continue
 
+        # 如果候选路径都失败了，最后尝试用原始名称加载（这可能会触发下载）
         try:
-            _reset_hf_http_session()
             return _build_model(model_name)
         except Exception as exc:
+            if "client has been closed" in str(exc).lower():
+                _reset_hf_http_session()
+                try:
+                    return _build_model(model_name)
+                except Exception as exc2:
+                    exc = exc2
+            
             tips = [
                 f"模型加载失败: {model_name}",
                 f"原始错误: {exc}",
