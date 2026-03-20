@@ -55,74 +55,117 @@ class VectorDB:
         from sentence_transformers import SentenceTransformer
         import torch
         
-        # 1. 探测系统默认路径 (System Default Cache)
-        # 通常是 ~/.cache/torch/sentence_transformers/
+        # 1. 确定搜索目录
+        search_roots = []
+        
+        # A. 环境变量指定的路径
+        for env_var in ["SENTENCE_TRANSFORMERS_HOME", "HF_HOME", "XDG_CACHE_HOME"]:
+            val = os.environ.get(env_var)
+            if val:
+                p = Path(val)
+                if env_var == "HF_HOME": p = p / "sentence_transformers"
+                if env_var == "XDG_CACHE_HOME": p = p / "torch" / "sentence_transformers"
+                search_roots.append(p)
+
+        # B. 系统默认路径
         try:
             default_torch_home = torch.hub._get_torch_home()
-            default_st_home = Path(default_torch_home) / 'sentence_transformers'
+            search_roots.append(Path(default_torch_home) / 'sentence_transformers')
         except Exception:
-            default_st_home = Path.home() / '.cache' / 'torch' / 'sentence_transformers'
+            pass
+        search_roots.append(Path.home() / '.cache' / 'torch' / 'sentence_transformers')
+        search_roots.append(Path.home() / '.cache' / 'huggingface' / 'sentence_transformers')
+        search_roots.append(Path.home() / '.cache' / 'huggingface' / 'hub')
         
-        # 2. 探测插件自定义缓存路径 (Custom Cache Dir)
-        # 按照用户要求，如果没设置 model_cache_dir，我们也可以尝试从 db_path (即 vector_db_path) 找
-        custom_cache_dir = None
-        if model_cache_dir:
-            custom_cache_dir = Path(model_cache_dir).expanduser().resolve()
-        else:
-            # 如果没设置模型缓存目录，尝试使用向量数据库目录作为备选
-            custom_cache_dir = Path(self.db_path).parent / "APLR_ModelCache"
+        # C. 插件自定义路径
+        plugin_cache_dir = Path(model_cache_dir).expanduser().resolve() if model_cache_dir else Path(self.db_path).parent / "APLR_ModelCache"
+        search_roots.append(plugin_cache_dir)
+        
+        # D. 当前目录及模型目录
+        search_roots.append(Path.cwd() / "models")
+        search_roots.append(Path.cwd())
+
+        # 去重并保留顺序
+        unique_roots = []
+        for r in search_roots:
+            if r not in unique_roots: unique_roots.append(r)
+        
+        # 2. 定义探测函数：寻找包含 config.json 的有效模型文件夹
+        def find_local_path(roots: List[Path], name: str) -> Optional[str]:
+            short_name = name.split('/')[-1]
+            search_names = [name, name.replace("/", "_"), short_name]
             
-        # 确保自定义目录存在
-        custom_cache_dir.mkdir(parents=True, exist_ok=True)
+            for root in roots:
+                if not root.exists(): continue
+                # 优先尝试精确匹配
+                for sn in search_names:
+                    p = root / sn
+                    if p.exists() and (p / "config.json").exists():
+                        return str(p.resolve())
+                    # 尝试前缀匹配 (针对 sentence-transformers_ 这种)
+                    p2 = root / f"sentence-transformers_{sn}"
+                    if p2.exists() and (p2 / "config.json").exists():
+                        return str(p2.resolve())
+                
+                # 模糊匹配：遍历一级子目录
+                try:
+                    for p in root.iterdir():
+                        if not p.is_dir(): continue
+                        if short_name in p.name and (p / "config.json").exists():
+                            return str(p.resolve())
+                        # 针对 HF Hub 结构 (models--.../snapshots/.../config.json)
+                        if "models--" in p.name and short_name in p.name:
+                            snapshots = p / "snapshots"
+                            if snapshots.exists():
+                                for snap in snapshots.iterdir():
+                                    if snap.is_dir() and (snap / "config.json").exists():
+                                        return str(snap.resolve())
+                except Exception:
+                    continue
+            return None
 
-        # 3. 构建候选路径列表 (Candidate Paths)
-        # 这里的逻辑是：如果 model_name 是个 ID，我们先去这些地方找找看有没有现成的文件夹
-        candidate_names = []
+        # 3. 优先级探测
+        candidate_paths = []
         
-        # A. 检查是否是绝对路径或当前目录下存在的路径
-        if Path(model_name).exists():
-            candidate_names.append(str(Path(model_name).resolve()))
-
-        # B. 检查系统默认路径是否存在该模型
-        # 转换模型名为文件夹名 (通常是下划线替换斜杠)
-        safe_model_name = model_name.replace("/", "_")
-        if (default_st_home / safe_model_name).exists():
-            candidate_names.append(str(default_st_home / safe_model_name))
-        if (default_st_home / model_name).exists():
-            candidate_names.append(str(default_st_home / model_name))
-
-        # C. 检查自定义缓存路径是否存在该模型
-        if (custom_cache_dir / safe_model_name).exists():
-            candidate_names.append(str(custom_cache_dir / safe_model_name))
-        if (custom_cache_dir / model_name).exists():
-            candidate_names.append(str(custom_cache_dir / model_name))
-
-        # 4. 如果没找到现成的，我们准备下载。
-        # 在下载前，我们需要设置环境变量，告诉 SDK 往哪儿下。
-        # 按照用户要求，如果本地都没有，下载到 vector_db_path 相关的目录
-        # 这里我们统一使用 custom_cache_dir (它通常是 APLR_ModelCache)
-        # 如果你希望严格下载到 APLR_VectorDB 内部，可以将 custom_cache_dir 设为 self.db_path
+        # A. 检查是否直接是路径 (绝对或相对)
+        p_direct = Path(model_name)
+        if p_direct.exists() and (p_direct / "config.json").exists():
+            candidate_paths.append(str(p_direct.resolve()))
         
-        os.environ.setdefault("HF_HOME", str(custom_cache_dir))
-        os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(custom_cache_dir / "hub"))
-        os.environ.setdefault("TRANSFORMERS_CACHE", str(custom_cache_dir / "transformers"))
-        os.environ.setdefault("SENTENCE_TRANSFORMERS_HOME", str(custom_cache_dir / "sentence_transformers"))
+        # B. 探测所有根目录
+        found_path = find_local_path(unique_roots, model_name)
+        if found_path:
+            candidate_paths.append(found_path)
 
-        if hf_endpoint and not offline_mode:
-            os.environ["HF_ENDPOINT"] = hf_endpoint
-        else:
-            os.environ.pop("HF_ENDPOINT", None)
+        # 4. 尝试加载本地候选
+        for path in candidate_paths:
+            try:
+                # 显式指定 local_files_only=True 确保不联网
+                return SentenceTransformer(path, trust_remote_code=trust_remote_code, local_files_only=True)
+            except Exception:
+                continue
 
-        model_kwargs = {
-            "trust_remote_code": trust_remote_code
-        }
-        if custom_cache_dir:
-            model_kwargs["cache_folder"] = str(custom_cache_dir)
+        # 5. 如果本地没找到，且是离线模式，直接报错
         if offline_mode:
-            model_kwargs["local_files_only"] = True
+            searched_str = "\n".join([f"- {r}" for r in unique_roots if r.exists()])
+            raise RuntimeError(
+                f"离线模式下未找到模型 {model_name}。\n"
+                f"已搜索根目录:\n{searched_str}\n"
+                "请确保模型文件夹（包含 config.json）存在于上述路径中。"
+            )
 
-        def _build_model(name: str) -> SentenceTransformer:
-            return SentenceTransformer(name, **model_kwargs)
+        # 6. 准备在线下载
+        # 设置环境变量
+        os.environ["HF_HOME"] = str(plugin_cache_dir)
+        os.environ["SENTENCE_TRANSFORMERS_HOME"] = str(plugin_cache_dir / "sentence_transformers")
+        
+        if hf_endpoint:
+            os.environ["HF_ENDPOINT"] = hf_endpoint
+            try:
+                import huggingface_hub
+                huggingface_hub.constants.HF_ENDPOINT = hf_endpoint
+            except Exception:
+                pass
 
         def _reset_hf_http_session():
             try:
@@ -133,32 +176,38 @@ class VectorDB:
             except Exception:
                 pass
 
-        # 5. 尝试加载
-        # 先试候选路径（本地已有的）
-        for candidate in candidate_names:
-            try:
-                return _build_model(candidate)
-            except Exception:
-                continue
-
-        # 如果候选路径都失败了，最后尝试用原始名称加载（这可能会触发下载）
         try:
-            return _build_model(model_name)
+            # 尝试下载并加载，指定 cache_folder 确保下载到插件目录
+            return SentenceTransformer(model_name, trust_remote_code=trust_remote_code, cache_folder=str(plugin_cache_dir))
         except Exception as exc:
             if "client has been closed" in str(exc).lower():
                 _reset_hf_http_session()
                 try:
-                    return _build_model(model_name)
+                    return SentenceTransformer(model_name, trust_remote_code=trust_remote_code, cache_folder=str(plugin_cache_dir))
                 except Exception as exc2:
                     exc = exc2
             
+            # 收集诊断信息：列出搜索目录下的内容
+            diagnostic_info = []
+            for r in unique_roots:
+                if r.exists():
+                    try:
+                        dirs = [d.name for d in r.iterdir() if d.is_dir()]
+                        diagnostic_info.append(f"目录 {r} 下的文件夹: {dirs[:10]}{'...' if len(dirs)>10 else ''}")
+                    except Exception:
+                        diagnostic_info.append(f"无法读取目录 {r}")
+
             tips = [
                 f"模型加载失败: {model_name}",
+                f"已尝试本地路径: {candidate_paths}",
+                f"搜索根目录: {[str(r) for r in unique_roots]}",
+                "诊断信息:",
+                *diagnostic_info,
                 f"原始错误: {exc}",
-                "可选排查：",
-                "1) 设置可访问的 HF 镜像地址（如 https://hf-mirror.com）；",
-                "2) 把 embedding_model 改成已下载好的本地目录；",
-                "3) 若已离线缓存，开启 offline_mode=true。"
+                "建议：",
+                "1) 检查本地模型文件夹是否完整（必须包含 config.json）；",
+                "2) 检查网络或镜像地址是否正确；",
+                "3) 手动将模型文件夹放入 APLR_ModelCache 目录下。"
             ]
             raise RuntimeError("\n".join(tips)) from exc
 
