@@ -20,7 +20,7 @@ import shutil
 import subprocess
 import sys
 
-@register("local_reminiscence", "olozhika", "本地记忆插件，包含每日总结工具", "1.1.4")
+@register("local_reminiscence", "olozhika", "本地记忆插件，包含每日总结工具", "1.1.3")
 class LocalReminiscencePlugin(Star):
     def __init__(self, context: Context, config: any = None):
         super().__init__(context)
@@ -826,11 +826,32 @@ class LocalReminiscencePlugin(Star):
         found_any = False
         
         for target_user_id in self.target_user_id_list:
-            file_path = self.dialog_folder / f"{date_str}_{target_user_id}.json"
-            if not file_path.exists():
-                continue
+            safe_id = target_user_id.replace(":", "_") if target_user_id else ""
+            dialog_file = self.dialog_folder / f"{date_str}_dialog_{safe_id}.json"
+            if not dialog_file.exists():
+                # 如果没找到，尝试提取一次（可能是补录历史记录）
+                try:
+                    core_db_path = Path.cwd() / "data" / "data_v4.db"
+                    clean_dialogue_with_different_limits(
+                        db_path=core_db_path,
+                        output_dir=self.dialog_folder,
+                        username=self.username,
+                        ai_name=self.ai_name,
+                        platform="AstrBot",
+                        target_date=date_str,
+                        target_user_id=target_user_id
+                    )
+                except Exception as e:
+                    logger.error(f"提取聊天记录失败: {e}")
+                
+                # 提取后再检查一次
+                if not dialog_file.exists():
+                    logger.info(f"[APLR] 没找到 {date_str} ({target_user_id}) 的聊天记录，尝试路径: {dialog_file}")
+                    continue
+
+            # 读取聊天记录
             try:
-                with open(file_path, "r", encoding="utf-8") as f:
+                with open(dialog_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 conversations = data.get("conversations", [])
                 if conversations:
