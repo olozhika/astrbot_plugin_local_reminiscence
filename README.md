@@ -184,4 +184,3 @@ To use this plugin, you must perform the first three steps!
 - [ ] 把回忆权重（重要性 时间衰减等）变成可根据个人需求手动调节的形式
 - [ ] 可选择性开启的记忆强度动态变化（经常被回忆起的内容强度增加）
 - [ ] 节点关联
-- [ ] 
