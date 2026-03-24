@@ -18,7 +18,7 @@ A lightweight local memory plugin for AstrBot that uses local embedding models a
 <details>
 <summary>点击展开更早版本更新说明</summary>
 
-## 🔄 小更新说明 (v1.1.4)
+### 🔄 小更新说明 (v1.1.4)
 
 1. **境内网络全支持**，这下真的是点击即下载了，启动时也不会被网络卡住!感谢@murphys7017
 2. 本插件现可以提供（正在本地后台运行的这个）向量模型的API供其他插件调用（但大概目前没啥用）
