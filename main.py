@@ -20,7 +20,7 @@ import shutil
 import subprocess
 import sys
 
-@register("local_reminiscence", "olozhika", "基于定时总结和向量化的本地记忆插件", "1.2.0")
+@register("local_reminiscence", "olozhika", "本地记忆插件，包含每日总结工具", "1.2.0")
 class LocalReminiscencePlugin(Star):
     def __init__(self, context: Context, config: any = None):
         super().__init__(context)
@@ -592,20 +592,20 @@ class LocalReminiscencePlugin(Star):
         else:
             yield event.plain_result(f"暂时没有关于“{query}”的节点记忆呢。")
 
-    @filter.command("write_node")
+    @filter.command("write_node_command")
     async def write_node_command(self, event: AstrMessageEvent):
-        """手动写入或更新记忆节点。用法：/write_node [节点名] [类型] [描述]"""
+        """手动写入或更新记忆节点。用法：/write_node_command [节点名] [类型] [描述]"""
         msg = event.message_str.strip()
         # 移除命令名
-        content = re.sub(r'^/?write_node\s*', '', msg).strip()
+        content = re.sub(r'^/?write_node_command\s*', '', msg).strip()
         
         if not content:
-            yield event.plain_result("用法：/write_node [节点名] [类型] [描述]")
+            yield event.plain_result("用法：/write_node_command [节点名] [类型] [描述]")
             return
             
         parts = content.split(maxsplit=2)
         if len(parts) < 3:
-            yield event.plain_result("参数不足。用法：/write_node [节点名] [类型] [描述]\n示例：/write_node 王小美 人物 住在璃月的椰羊爱好者")
+            yield event.plain_result("参数不足。用法：/write_node_command [节点名] [类型] [描述]\n示例：/write_node_command olozhika 人物 Lanya的好朋友")
             return
             
         name, node_type, description = parts
@@ -619,6 +619,32 @@ class LocalReminiscencePlugin(Star):
         except Exception as e:
             logger.error(f"写入节点失败: {e}")
             yield event.plain_result(f"❌ 写入节点失败: {e}")
+
+    @llm_tool(name="write_node_tool")
+    async def write_node_tool(self, event: AstrMessageEvent, name: str, node_type: str, description: str) -> str:
+        """手动写入或更新记忆节点（如人物、地点、核心概念）。当你有重要信息需要迫切记录、更新时使用。不急的内容可以等到每日总结环节自动更新。
+        
+        注意：
+        1. 请务必先使用 `recall_node_tool` 查询相应节点是否存在。
+        2. 如果节点已存在，请在保留完整核心事实（如身份、关键背景）的基础上，根据今日信息更新其状态或追加新进展。
+        
+        Args:
+            name(string): 节点名称。
+            node_type(string): 节点类型（如：人物、地点、物品、概念、组织）。
+            description(string): 节点的详细描述或背景信息。
+        """
+        if not name or not node_type or not description:
+            return "错误：name, node_type 和 description 均为必填项。"
+            
+        from .models import MemoryNode
+        node = MemoryNode(name=name, type=node_type, description=description)
+        
+        try:
+            self.db.update_nodes([node])
+            return f"✅ 已成功写入/更新节点：{name} ({node_type})"
+        except Exception as e:
+            logger.error(f"写入节点失败: {e}")
+            return f"❌ 写入节点失败: {e}"
 
     @llm_tool(name="recall_node_tool")
     async def recall_node_tool(self, event: AstrMessageEvent, name: str) -> str:
