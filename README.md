@@ -137,7 +137,7 @@ To use this plugin, you must perform the first three steps!
 | `/recall_node_command` | `[name]` | 搜索特定的记忆节点 |
 | `/recall_event_reflection_command` | `[event_id]` | 获取特定事件的深度观察和感想 |
 | `/recall_daily_reflection_command` | `[YYYY-MM-DD]` | 获取特定日期的每日自由心得 |
-| `/write_node` | `[名] [类] [述]` | 手动写入或更新记忆节点 |
+| `/write_node_command` | `[名] [类] [述]` | 手动写入或更新记忆节点 |
 | `/extract_chat_history_command` | `[YYYY-MM-DD]` | 从数据库提取指定日期的聊天记录（维护用） |
 | `/update_nodes_command` | `[YYYY-MM-DD]` | 从已有事件中重新提取记忆节点（维护用） |
 | `/vectorize_events` | `[YYYY-MM-DD]` | 将指定日期的事件重新向量化（维护用，比如更换了向量模型后使用） |
@@ -150,6 +150,7 @@ To use this plugin, you must perform the first three steps!
 | `recall_node_tool` | `name` | AI 搜索特定的实体或概念背景 |
 | `recall_event_reflection_tool` | `event_id` | AI 回想特定事件的深度细节和心理活动 |
 | `recall_daily_reflection_tool` | `date` | AI 回想特定日期的整体心境 |
+| `write_node_tool` | `名 类 述` | AI 手动写入或更新记忆节点 |
 ---
 
 人类使用command范例如下（第一句这对吗？？？）
