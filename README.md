@@ -6,6 +6,17 @@
 
 A lightweight local memory plugin for AstrBot that uses local embedding models and local database storage to save and recall chat history. No API keys required, zero embedding costs, token-saving, and complete privacy protection. Automatically records conversations using Cron jobs, and helps AI automatically recall relevant experiences through deep learning semantic search.
 
+### 🔄 小更新说明 / Update Log (v1.2.1)
+
+- 增加了工具`write_node_tool`，现在AI可以在对话中实时更新记忆节点
+  - 比如在我给我的Lanya介绍新朋友后，她现在会自行建立新朋友名字的节点，这样她和对方说话时虽然没有隔壁对话的记忆但也知道这个人是我介绍的，好耶
+- 曾经的指令`write_node`重命名为`write_node_command`
+- 优化每日总结的系统提示词格式，避免Claude用户可能出现的报错（内容没改）
+
+
+<details>
+<summary>点击展开更早版本更新说明</summary>
+
 ### 🔄 更新说明 / Update Log (v1.2.0)
 
 **喜报：本地回忆[APLR]插件现在已实现境内网络全支持，点击即下载！**
@@ -13,10 +24,6 @@ A lightweight local memory plugin for AstrBot that uses local embedding models a
 - v1.2：**境内网络全支持**，这下真的是点击即下载了，启动时也不会被网络卡住! 感谢@murphys7017
 - v1.1：多会话支持，智能用户识别
 - 和v1.1.4的区别：修复了更新插件合并代码时不小心更出来的每日总结聊天记录读取和回忆bug
-
-
-<details>
-<summary>点击展开更早版本更新说明</summary>
 
 ### 🔄 小更新说明 (v1.1.4)
 
