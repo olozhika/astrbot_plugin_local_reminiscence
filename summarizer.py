@@ -50,7 +50,7 @@ class DailySummarizer:
         
         context_text = f"\n【已知记忆节点背景】\n{existing_nodes_context}\n" if existing_nodes_context else ""
         
-        system_prompt = f"""你正在从一组你之前总结的事件中提取记忆节点。必须严格按照以下 JSON Schema 输出 JSON 数据：
+        system_prompt = f'''你正在从一组你之前总结的事件中提取记忆节点。必须严格按照以下 JSON Schema 输出 JSON 数据：
 {schema_str}
 
 【提取规则】
@@ -68,7 +68,7 @@ class DailySummarizer:
         - **增量更新**：重点记录事件中体现出的且有持久影响的新变化、新观点或新属性。
     - 今天的日期是 {date_str}。
 {context_text}
-"""
+'''
         try:
             llm_resp = await self.llm_generate(
                 prompt=f"请从以下事件中提取记忆节点：\n\n{events_text}",
@@ -99,7 +99,7 @@ class DailySummarizer:
 
         schema_str = json.dumps(schema_dict, ensure_ascii=False, indent=2).replace("{ai_name}", self.ai_name)
         
-        pass1_system_prompt = f"""你正在回顾并总结今天与朋友的交流。必须严格按照以下 JSON Schema 输出 JSON 数据：
+        pass1_system_prompt = f'''你正在回顾并总结今天与朋友的交流。必须严格按照以下 JSON Schema 输出 JSON 数据：
 {schema_str}
 
 【总结规则】
@@ -111,7 +111,7 @@ class DailySummarizer:
 - 格式规范：
     - event_id 格式：evt_{date_str.replace('-', '')}_序号（如 001, 002）。
     - 今天的日期是 {date_str}。
-"""
+'''
         
         full_system_prompt = (self.base_system_prompt + "\n\n" + pass1_system_prompt) if self.base_system_prompt else pass1_system_prompt
         user_prompt = (self.base_user_prompt + "\n\n" + conversation_text) if self.base_user_prompt else conversation_text
