@@ -6,16 +6,34 @@
 
 A lightweight local memory plugin for AstrBot that uses local embedding models and local database storage to save and recall chat history. No API keys required, zero embedding costs, token-saving, and complete privacy protection. Automatically records conversations using Cron jobs, and helps AI automatically recall relevant experiences through deep learning semantic search.
 
+
 ### 🔄 小更新说明 / Update Log (v1.2.1)
+
+- 优化聊天记录导出方法，增强tool调用的识别与记录
+- 优化向量化方式：现在对于事件主语和发言人有更强约束
+- 可手动调整的回忆权重：配置文件【回忆权重】四参数可以根据自己喜好调整
+- 增加"每日总结单次处理会话量"参数，在聊天内容较多时在分割同一时间的前提下进行分段总结，提升AI表现
+
+#### 老用户升级
+
+1. 向量化升级
+   如果你的AI平时记录事件通常用第一人称，可以执行 `/vectorize_events all` 重新向量化所有事件，以达到更好的匹配效果
+   如果你的AI以往记录事件通常用第三人称，不用执行
+   今后用第一人称和第三人称效果没区别，在进行向量化的时候会统一临时变成第三人称
+
+2. 【回忆权重】四参数调整
+   可以根据自己的喜好调整【回忆权重】四参数，具体见README.md
+
+<details>
+<summary>点击展开更早版本更新说明</summary>
+
+### 🔄 小更新说明 (v1.2.1)
 
 - 增加了工具`write_node_tool`，现在AI可以在对话中实时更新记忆节点
   - 比如在我给我的Lanya介绍新朋友后，她现在会自行建立新朋友名字的节点，这样她和对方说话时虽然没有隔壁对话的记忆但也知道这个人是我介绍的，好耶
 - 曾经的指令`write_node`重命名为`write_node_command`
 - 优化每日总结的系统提示词格式，避免Claude用户可能出现的报错（内容没改）
 
-
-<details>
-<summary>点击展开更早版本更新说明</summary>
 
 ### 🔄 更新说明 / Update Log (v1.2.0)
 
@@ -114,7 +132,6 @@ To use this plugin, you must perform the first three steps!
     - 插件会自动从 AstrBot 的用户识别功能中提取发送者昵称，请在 Astrbot-其他配置 开启官方的用户识别。如果该功能未开启，则会使用配置中指定的默认 `username`
       - 如果你希望让AI记住的用户名并不是你的ID，建议安装[统一昵称](https://github.com/Hakuin123/astrbot_plugin_uni_nickname)插件，并开启`system_replace`模式
     - 设置 AI 名称，这是在 AI 的记忆中它使用的名字
-    - 境内网络建议保留默认 `hf_endpoint=https://hf-mirror.com`
     - 若你已提前下载模型，可将 `embedding_model` 改成本地目录，并开启 `embedding_local_files_only=true`
     - 其他配置不太重要，有需要就改
 
@@ -132,6 +149,12 @@ To use this plugin, you must perform the first three steps!
 
 6. [可选] **开启离线加载模式**
     - 在确认本插件已经成功加载后，可以到插件设置中开启离线加载模式，将节省部分网络情况下Astrbot启动时本插件加载所需时间。
+  
+7. [可选] **调整【回忆权重】四参数**
+    - 建议在使用几天后根据自己的喜好调整【回忆权重】四参数，几种推荐设置：
+      - `1,1,1,1` 默认设置，平衡事件衰减、重要性、情绪强度和稀有词汇
+      - `0,0,0,0` 最接近纯粹的向量匹配，相信向量的力量！
+      - `0,0,0,2` 额外提高稀有词汇权重，比如使得"A和B一起去看科幻片"更容易匹配到"那天的科幻片超有意思"而不是"A和B一起去看动作片"
 
 
 ## ⌨️ 指令和工具 / Commands & Tools
