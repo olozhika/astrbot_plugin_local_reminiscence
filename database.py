@@ -24,11 +24,16 @@ class MemoryDB:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            # 数据库迁移：检查 reflection 列是否存在，如果不存在则添加
+            # 数据库迁移：检查新列是否存在
             cursor.execute("PRAGMA table_info(events)")
             columns = [column[1] for column in cursor.fetchall()]
             if 'reflection' not in columns:
                 cursor.execute("ALTER TABLE events ADD COLUMN reflection TEXT")
+            if 'reinforcement_count' not in columns:
+                cursor.execute("ALTER TABLE events ADD COLUMN reinforcement_count INTEGER DEFAULT 0")
+            
+            cursor.execute("PRAGMA table_info(nodes)")
+            node_columns = [column[1] for column in cursor.fetchall()]
             
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_events_date ON events(date)")
 
@@ -64,6 +69,19 @@ class MemoryDB:
                     type TEXT,
                     description TEXT,
                     last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS event_relations (
+                    source_event_id TEXT,
+                    target_event_id TEXT,
+                    relation_type TEXT,  -- 'caused_by', 'related_to', 'context_for', 'conclusion_of'
+                    confidence REAL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (source_event_id, target_event_id, relation_type),
+                    FOREIGN KEY(source_event_id) REFERENCES events(event_id) ON DELETE CASCADE,
+                    FOREIGN KEY(target_event_id) REFERENCES events(event_id) ON DELETE CASCADE
                 )
             """)
             conn.commit()
@@ -115,7 +133,6 @@ class MemoryDB:
             # 插入/更新记忆节点
             if hasattr(summary, 'nodes') and summary.nodes:
                 for node in summary.nodes:
-                    # 如果节点已存在，尝试合并描述（简单合并或覆盖，这里采用覆盖并记录日志）
                     cursor.execute("""
                         INSERT INTO nodes (name, type, description, last_updated)
                         VALUES (?, ?, ?, CURRENT_TIMESTAMP)
@@ -154,6 +171,28 @@ class MemoryDB:
                             "INSERT OR IGNORE INTO event_tags (event_id, tag_id) VALUES (?, ?)",
                             (event.event_id, tag_id)
                         )
+            
+            # 插入事件关系
+            if hasattr(summary, 'relations') and summary.relations:
+                for rel in summary.relations:
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO event_relations (source_event_id, target_event_id, relation_type, confidence)
+                        VALUES (?, ?, ?, ?)
+                    """, (rel.source_id, rel.target_id, rel.relation_type, rel.confidence))
+                    
+            conn.commit()
+
+    def insert_relations(self, relations: List):
+        """插入事件关系列表"""
+        if not relations:
+            return
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            for rel in relations:
+                cursor.execute("""
+                    INSERT OR REPLACE INTO event_relations (source_event_id, target_event_id, relation_type, confidence)
+                    VALUES (?, ?, ?, ?)
+                """, (rel.source_id, rel.target_id, rel.relation_type, rel.confidence))
             conn.commit()
 
     def get_summaries(self, days: int) -> List[dict]:
@@ -219,11 +258,34 @@ class MemoryDB:
                 return dict(row)
             return None
 
+    def get_all_events(self) -> List[dict]:
+        """获取数据库中所有的事件记录"""
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM events ORDER BY date ASC, event_id ASC")
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+
     def get_events_by_date(self, date: str) -> List[dict]:
         """获取指定日期的所有事件"""
         with self._get_conn() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM events WHERE date = ?", (date,))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_recent_important_events(self, days: int, min_score: int) -> List[dict]:
+        """获取最近 n 天内，重要性 * 情感强度 >= m 的事件"""
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            # SQLite date('now', 'localtime') 返回当前本地日期 YYYY-MM-DD
+            # 考虑到用户可能在不同时区，这里使用 date('now', 'localtime') 或者直接 date('now')
+            # 插件内部通常使用 datetime.now().strftime("%Y-%m-%d")，所以这里保持一致
+            cursor.execute("""
+                SELECT * FROM events 
+                WHERE date >= date('now', 'localtime', ?) 
+                AND (importance * emotional_intensity) >= ?
+                ORDER BY date DESC, (importance * emotional_intensity) DESC
+            """, (f'-{days} days', min_score))
             return [dict(row) for row in cursor.fetchall()]
 
     def get_reflection_by_date(self, date: str) -> dict:
@@ -248,7 +310,7 @@ class MemoryDB:
             cursor.execute(f"SELECT * FROM nodes WHERE LOWER(name) IN ({placeholders})", lower_names)
             return [dict(row) for row in cursor.fetchall()]
 
-    def search_nodes(self, query: str, limit: int = 3, include_description: bool = True) -> List[dict]:
+    def search_nodes(self, query: str, limit: int = 1, include_description: bool = True) -> List[dict]:
         """模糊搜索节点，匹配名称或描述。优先匹配名称，其次匹配描述。"""
         with self._get_conn() as conn:
             cursor = conn.cursor()
@@ -285,3 +347,27 @@ class MemoryDB:
                 LIMIT ?
             """, tuple(params))
             return [dict(row) for row in cursor.fetchall()]
+
+    def _has_relation(self, event_id1: str, event_id2: str) -> bool:
+        """检查两个事件是否有记录的关系"""
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT 1 FROM event_relations WHERE (source_event_id = ? AND target_event_id = ?) OR (source_event_id = ? AND target_event_id = ?)",
+                (event_id1, event_id2, event_id2, event_id1)
+            )
+            return cursor.fetchone() is not None
+
+    def reinforce_memory(self, event_ids: List[str]):
+        """增强被回忆事件的记忆强度"""
+        if not event_ids:
+            return
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            for eid in event_ids:
+                cursor.execute("""
+                    UPDATE events 
+                    SET reinforcement_count = COALESCE(reinforcement_count, 0) + 1
+                    WHERE event_id = ?
+                """, (eid,))
+            conn.commit()

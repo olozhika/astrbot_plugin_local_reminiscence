@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 from typing import List, Dict, Optional
+from astrbot.api import logger
 
 class VectorDB:
     def __init__(
@@ -10,10 +11,12 @@ class VectorDB:
         model_cache_dir: Optional[str] = None,
         hf_endpoint: str = "",
         trust_remote_code: bool = False,
-        offline_mode: bool = False
+        offline_mode: bool = False,
+        ai_name: str = ""
     ):
         self.db_path = db_path
         self.offline_mode = offline_mode
+        self.ai_name = ai_name
         
         if self.offline_mode:
             os.environ["TRANSFORMERS_OFFLINE"] = "1"
@@ -228,6 +231,16 @@ class VectorDB:
         self._ensure_model()
         return self.model.encode(texts, normalize_embeddings=True).tolist()
 
+    def clear_all(self):
+        """清空向量库中的所有数据"""
+        try:
+            self.client.delete_collection(name="events")
+            self.collection = self.client.get_or_create_collection(name="events")
+            logger.info("[APLR] 向量库已成功清空。")
+        except Exception as e:
+            logger.error(f"[APLR] 清空向量库失败: {e}")
+            raise e
+
     def add_events(self, events: List[Dict]):
         """将事件向量化并存入 ChromaDB"""
         if not events:
@@ -236,8 +249,14 @@ class VectorDB:
         
         ids = [ev['event_id'] for ev in events]
         documents = [ev['narrative'] for ev in events]
+        
+        # 替换 "我" 为 ai_name 用于向量化，但不影响存储的原始文本
+        embedding_texts = documents
+        if self.ai_name:
+            embedding_texts = [text.replace("我", self.ai_name) for text in documents]
+            
         # 开启归一化
-        embeddings = self.model.encode(documents, normalize_embeddings=True).tolist()
+        embeddings = self.model.encode(embedding_texts, normalize_embeddings=True).tolist()
         
         # ChromaDB upsert
         self.collection.upsert(
@@ -249,6 +268,7 @@ class VectorDB:
     def search_events(self, query: str, top_n: int = 10) -> List[Dict]:
         """搜索最接近的事件 ID 和相关度分数"""
         self._ensure_model()
+        
         # 开启归一化
         query_embedding = self.model.encode([query], normalize_embeddings=True).tolist()
         results = self.collection.query(
