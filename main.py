@@ -20,7 +20,7 @@ import shutil
 import subprocess
 import sys
 
-@register("local_reminiscence", "olozhika", "基于定时总结和向量化的本地记忆插件", "1.2.1")
+@register("local_reminiscence", "olozhika", "基于定时总结和向量化的本地记忆插件", "1.2.2")
 class LocalReminiscencePlugin(Star):
     def __init__(self, context: Context, config: any = None):
         super().__init__(context)
@@ -125,7 +125,8 @@ class LocalReminiscencePlugin(Star):
             model_cache_dir=str(embedding_cache_dir) if embedding_cache_dir else None,
             hf_endpoint=self.hf_endpoint,
             trust_remote_code=embedding_trust_remote_code,
-            offline_mode=self.offline_mode
+            offline_mode=self.offline_mode,
+            ai_name=self.ai_name
         )
 
     @filter.on_llm_request()
@@ -155,7 +156,7 @@ class LocalReminiscencePlugin(Star):
                 reflections = self.db.get_reflections(7)
                 
                 if summaries or reflections:
-                    memory_text = "\n\n【历史记忆 - 这是你对过去几天的回忆，可以在有需要的时候参考这些信息，你并非必须在对话中提及它们】\n"
+                    memory_text = "\n\n【历史记忆 - 这是你对过去几天的回忆】\n"
                     
                     if summaries:
                         memory_text += "### 最近3天的深度回忆\n"
@@ -255,15 +256,20 @@ class LocalReminiscencePlugin(Star):
             hit_prob = random.random() <= auto_recall_prob
             
             if hit_keyword or hit_prob:
+                # 构造检索词：用户名: 用户发言
+                search_query = message_str
+                if nickname_match:
+                    username = nickname_match.group(1).strip()
+                    search_query = f"{username}: {message_str}"
+                
                 top_n = self.config.get("top_n_events", 10)
                 m1 = self.config.get("m1_top_events", 3)
                 m2 = self.config.get("m2_random_events", 2)
                 
-                search_results = self.vector_db.search_events(message_str, top_n=top_n)
+                search_results = self.vector_db.search_events(search_query, top_n=top_n)
                 if search_results:
                     full_events = []
                     for res in search_results:
-                        # 仅保留高于阈值的事件
                         if res['relevance'] >= auto_recall_threshold:
                             ev = self.db.get_event_by_id(res['event_id'])
                             if ev:
@@ -271,20 +277,24 @@ class LocalReminiscencePlugin(Star):
                                 full_events.append(ev)
                     
                     if full_events:
-                        ranked_events = self._rank_events(full_events, message_str)
+                        ranked_events = self._rank_events(full_events, search_query)
                         selected_events = ranked_events[:m1]
                         remaining = ranked_events[m1:]
                         if remaining and m2 > 0:
                             selected_events.extend(random.sample(remaining, min(len(remaining), m2)))
                         
                         if selected_events:
-                            recall_text = "\n\n【自动回想 - 你回想起了以下片段】\n"
-                            for ev in selected_events:
-                                recall_text += f"📅 {ev['date']}\n"
-                                recall_text += f"📍 {ev['narrative']} [ID: {ev['event_id']}]\n"
-                                recall_text += f"💭 {self.ai_name}感到{ev['emotion']}\n"
-                                # recall_text += f"(相关度{ev.get('relevance', 0)}%)\n"
-                                recall_text += "---\n"
+                            # 强化记忆
+                            re_intensity = self.config.get("reinforcement_intensity", 1.0)
+                            if re_intensity > 0:
+                                event_ids = [ev['event_id'] for ev in selected_events]
+                                self.db.reinforce_memory(event_ids)
+
+                            # 使用聚类和叙述桥梁
+                            clusters = self._cluster_events_by_context(selected_events)
+                            recall_text = "\n\n【自动回想 - 你回想起了以下记忆片段】\n"
+                            recall_text += self._generate_narrative_bridge(clusters)
+                            
                             if self.config.get("encourage_deep_recall", False):
                                 recall_text += "（注：若想进一步回忆某个事件的细节或感想，可以使用 `recall_event_reflection_tool` 并传入对应的 事件ID来深度回想；如果觉得回忆还不够充分，可以使用 `recall_memory_tool` 对刚想起的片段进行联想）"
                             req.system_prompt += recall_text
@@ -315,7 +325,7 @@ class LocalReminiscencePlugin(Star):
                 if is_common_name:
                     found_nodes = self.db.get_nodes_by_names([kw])
                 else:
-                    found_nodes = self.db.search_nodes(kw, limit=2, include_description=include_description)
+                    found_nodes = self.db.search_nodes(kw, include_description=include_description)
                 
                 for node in found_nodes:
                     if node['name'] not in seen_names:
@@ -372,17 +382,47 @@ class LocalReminiscencePlugin(Star):
 
     @filter.command("vectorize_events")
     async def vectorize_events_command(self, event: AstrMessageEvent):
-        """将指定日期的事件向量化并存入向量数据库。用法：/vectorize_events [日期]（格式YYYY-MM-DD）。"""
+        """将指定日期的事件向量化并存入向量数据库。用法：/vectorize_events [日期|all]（格式YYYY-MM-DD）。"""
         args = event.message_str.strip().split()
         if len(args) < 2:
-            yield event.plain_result("请提供日期，格式为 YYYY-MM-DD")
+            yield event.plain_result("请提供日期（YYYY-MM-DD）或输入 'all' 重新向量化全部。")
             return
         
-        date_str = args[1]
+        param = args[1].lower()
+        
+        if param == "all":
+            yield event.plain_result("⚠️ 正在清空向量库并重新录入所有事件，这可能需要较长时间，请稍候...")
+            try:
+                # 1. 清空向量库
+                self.vector_db.clear_all()
+                
+                # 2. 获取所有事件
+                all_events = self.db.get_all_events()
+                if not all_events:
+                    yield event.plain_result("数据库中没有找到任何事件。")
+                    return
+                
+                # 3. 分批向量化（防止内存溢出或超时）
+                batch_size = 50
+                total = len(all_events)
+                for i in range(0, total, batch_size):
+                    batch = all_events[i:i + batch_size]
+                    self.vector_db.add_events(batch)
+                    if i % 100 == 0 or i + batch_size >= total:
+                        logger.info(f"[APLR] 向量化进度: {min(i + batch_size, total)}/{total}")
+                
+                yield event.plain_result(f"✅ 已成功重新向量化全部 {total} 个事件。")
+            except Exception as e:
+                logger.error(f"重新向量化全部失败: {e}")
+                yield event.plain_result(f"❌ 重新向量化全部失败: {e}")
+            return
+
+        # 原有的按日期向量化逻辑
+        date_str = param
         try:
             datetime.strptime(date_str, "%Y-%m-%d")
         except ValueError:
-            yield event.plain_result("日期格式不正确，请使用 YYYY-MM-DD")
+            yield event.plain_result("日期格式不正确，请使用 YYYY-MM-DD 或输入 'all'")
             return
         
         events = self.db.get_events_by_date(date_str)
@@ -435,11 +475,26 @@ class LocalReminiscencePlugin(Star):
                     history=[]
                 )
 
+            # 3. 获取基础提示词
+            base_system_prompt = self.config.get("default_prompt", "") if self.config else ""
+            base_user_prompt = self.config.get("user_prompts", "") if self.config else ""
+
+            # 注入 Astrbot 自带的人格提示词
+            try:
+                persona = await self.context.persona_manager.get_default_persona_v3(umo=umo)
+                if persona and persona.get('prompt'):
+                    base_system_prompt = (persona['prompt'] + "\n" + base_system_prompt) if base_system_prompt else (persona['prompt'] + "\n")
+                    logger.debug(f"已注入Astrbot人格设定")
+                    logger.debug(f"base sys prompt: {base_system_prompt}")
+            except Exception as pe:
+                logger.warning(f"[APLR] 尝试获取 Astrbot 人格设定失败: {pe}")
+
             summarizer = DailySummarizer(
                 llm_generate_func=llm_generate_func,
                 ai_name=self.ai_name,
-                base_system_prompt=self.config.get("default_prompt", ""),
-                base_user_prompt=self.config.get("user_prompts", "")
+                base_system_prompt=base_system_prompt,
+                base_user_prompt=base_user_prompt,
+                search_events_func=self._search_events_for_summary
             )
 
             # 获取现有节点背景 (提取节点时也放宽上限，允许描述匹配)
@@ -498,7 +553,19 @@ class LocalReminiscencePlugin(Star):
         if not query:
             return "错误：需要提供检索关键词query"
         
-        return await self._get_memory_retrieval_text(query, count=count if count > 0 else None)
+        # 1. 检索
+        result = await self._get_memory_retrieval_text(query, count=count if count > 0 else None)
+        
+        # 2. 强化被回忆的事件
+        re_intensity = self.config.get("reinforcement_intensity", 1.0)
+        if re_intensity > 0 and result and "暂时没有找到" not in result and "未找到" not in result:
+            # 提取 ID
+            event_ids = re.findall(r'\[ID: (evt_\d{8}_\d{3})\]', result)
+            if event_ids:
+                self.db.reinforce_memory(event_ids)
+                logger.info(f"[APLR] 强化了 {len(event_ids)} 条记忆的权重")
+                
+        return result
 
     @llm_tool(name="recall_event_reflection_tool")
     async def recall_event_reflection_tool(self, event: AstrMessageEvent, event_id: str) -> str:
@@ -536,6 +603,28 @@ class LocalReminiscencePlugin(Star):
             return "错误：需要提供日期 date。"
         return await self._get_daily_reflection_logic(date)
 
+    @llm_tool(name="recall_recent_events_tool")
+    async def recall_recent_events_tool(self, event: AstrMessageEvent, days: int = 7, min_score: int = 20) -> str:
+        """获取最近一段时间内比较重要的、或情感强烈的事件。用于快速回顾近期的重点记忆。
+        
+        Args:
+            days(int): 回溯的天数，默认为 7 天。
+            min_score(int): 筛选阈值（重要性 * 情感强度），默认为 20。分数越高，筛选出的事件越少且越重要。
+        """
+        try:
+            events = self.db.get_recent_important_events(days, min_score)
+            if not events:
+                return f"在最近 {days} 天内，没有找到重要性评分（重要性 * 情感强度）大于等于 {min_score} 的事件。"
+            
+            # 聚类并格式化
+            clusters = self._cluster_events_by_context(events)
+            resp = f"📅 检索到了最近 {days} 天内的重点记忆（评分 >= {min_score}）：\n\n"
+            resp += self._generate_narrative_bridge(clusters)
+            return resp
+        except Exception as e:
+            logger.error(f"执行 recall_recent_events_tool 失败: {e}", exc_info=True)
+            return f"执行失败: {e}"
+
     async def _get_daily_reflection_logic(self, date: str) -> str:
         ref = self.db.get_reflection_by_date(date)
         if ref:
@@ -566,6 +655,82 @@ class LocalReminiscencePlugin(Star):
             return
         
         res = await self._get_daily_reflection_logic(date)
+        yield event.plain_result(res)
+
+    @filter.command("rebuild_relations_command")
+    async def rebuild_relations_command(self, event: AstrMessageEvent, date: str = ""):
+        """为特定日期的事件重新发现跨日关联。用法：/rebuild_relations_command [日期(YYYY-MM-DD)]"""
+        date = date.strip()
+        if not date:
+            yield event.plain_result("请输入日期（如 2026-03-12）。")
+            return
+        
+        # 1. 获取该日期的所有事件
+        events = self.db.get_events_by_date(date)
+        if not events:
+            yield event.plain_result(f"数据库中未找到日期为 {date} 的事件。")
+            return
+        
+        yield event.plain_result(f"正在为 {date} 的 {len(events)} 个事件重新发现跨日关联，请稍候...")
+        
+        # 2. 初始化总结器
+        provider_id = self.config.get("llm_provider_id")
+        if not provider_id:
+            yield event.plain_result("未配置 LLM Provider，无法执行关联发现。")
+            return
+            
+        async def llm_generate_func(prompt, system_prompt):
+            return await self.context.llm_generate(
+                chat_provider_id=provider_id,
+                prompt=prompt,
+                system_prompt=system_prompt,
+                history=[]
+            )
+            
+        # 获取基础提示词并注入 Astrbot 自带的人格提示词
+        base_system_prompt = self.config.get("default_prompt", "") if self.config else ""
+        base_user_prompt = self.config.get("user_prompts", "") if self.config else ""
+        try:
+            umo = event.unified_msg_origin
+            persona = await self.context.persona_manager.get_default_persona_v3(umo=umo)
+            if persona and persona.get('prompt'):
+                base_system_prompt = (persona['prompt'] + "\n" + base_system_prompt) if base_system_prompt else (persona['prompt'] + "\n")
+                logger.debug(f"已注入Astrbot人格设定")
+                logger.debug(f"base sys prompt: {base_system_prompt}")
+        except Exception as pe:
+            logger.warning(f"[APLR] 尝试获取 Astrbot 人格设定失败: {pe}")
+
+        summarizer = DailySummarizer(
+            llm_generate_func=llm_generate_func,
+            ai_name=self.ai_name,
+            base_system_prompt=base_system_prompt,
+            base_user_prompt=base_user_prompt,
+            search_events_func=self._search_events_for_summary
+        )
+        
+        # 3. 发现关联
+        try:
+            relations = await summarizer.discover_cross_day_relations(events, date)
+            if relations:
+                self.db.insert_relations(relations)
+                yield event.plain_result(f"成功为 {date} 发现了 {len(relations)} 条新的跨日关联并已存入数据库。")
+            else:
+                yield event.plain_result(f"未发现 {date} 的事件与往日记忆有实质性关联。")
+        except Exception as e:
+            logger.error(f"执行 rebuild_relations_command 失败: {e}", exc_info=True)
+            yield event.plain_result(f"执行失败: {e}")
+
+    @filter.command("recall_recent_events_command")
+    async def recall_recent_events_command(self, event: AstrMessageEvent, days: str = "7", min_score: str = "20"):
+        """获取最近一段时间内比较重要的、或情感强烈的事件。用法：/recall_recent_events_command [天数] [筛选分数]"""
+        try:
+            d = int(days)
+            s = int(min_score)
+        except ValueError:
+            yield event.plain_result("请输入有效的数字（如：/recall_recent_events_command 7 20）。")
+            return
+            
+        res = await self.recall_recent_events_tool(event, d, s)
         yield event.plain_result(res)
 
     @filter.command("recall_node_command")
@@ -674,7 +839,11 @@ class LocalReminiscencePlugin(Star):
             m2 = self.config.get("m2_random_events", 2)
 
         # 2. 向量检索
-        search_results = self.vector_db.search_events(query, top_n=top_n)
+        search_query = query
+        if self.ai_name:
+            search_query = query.replace("我", self.ai_name)
+            
+        search_results = self.vector_db.search_events(search_query, top_n=top_n)
         if not search_results:
             return "暂时没有找到相关的记忆呢。"
 
@@ -685,14 +854,14 @@ class LocalReminiscencePlugin(Star):
             relevance = res['relevance']
             ev = self.db.get_event_by_id(eid)
             if ev:
-                ev['relevance'] = relevance # 将相关度存入事件对象
+                ev['relevance'] = relevance 
                 full_events.append(ev)
         
         if not full_events:
             return "检索到了 ID 但没能从数据库找到详细信息。"
 
         # 4. 排序
-        ranked_events = self._rank_events(full_events, query)
+        ranked_events = self._rank_events(full_events, search_query)
 
         # 5. 选择 M1 + M2
         selected_events = ranked_events[:m1]
@@ -700,13 +869,22 @@ class LocalReminiscencePlugin(Star):
         if remaining and m2 > 0:
             selected_events.extend(random.sample(remaining, min(len(remaining), m2)))
 
-        # 6. 格式化输出
-        resp = f"🔍 回想起了相关记忆：\n\n" #关于“{query}”的
+        if selected_events:
+            # 强化记忆
+            re_intensity = self.config.get("reinforcement_intensity", 1.0)
+            if re_intensity > 0:
+                event_ids = [ev['event_id'] for ev in selected_events]
+                self.db.reinforce_memory(event_ids)
+
+        # 6. 聚类
+        clusters = self._cluster_events_by_context(selected_events)
+
+        # 7. 格式化输出
+        resp = f"🔍 回想起了相关记忆：\n\n"
         
-        # 优化：直接从 selected_events 中提取 tags 并查询 nodes 表
+        # 提取相关背景知识
         node_names = set()
         for ev in selected_events:
-            # 获取该事件的 tags
             with self.db._get_conn() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
@@ -722,30 +900,45 @@ class LocalReminiscencePlugin(Star):
             resp += "💡 相关背景知识：\n"
             for node in nodes:
                 last_updated_date = node['last_updated'].split(' ')[0] if node['last_updated'] else "未知"
-                resp += f"  - {node['name']} ({node['type']}) [最后更新: {last_updated_date}]: {node['description']}\n"
+                desc = node['description']
+                resp += f"  - {node['name']} ({node['type']}) [最后更新: {last_updated_date}]: {desc}\n"
             resp += "\n"
 
-        for ev in selected_events:
-            resp += f"📅 {ev['date']}\n"
-            resp += f"📍 {ev['narrative']} [ID: {ev['event_id']}]\n"
-            resp += f"💭 {self.ai_name}感到{ev['emotion']}\n"
-            resp += f"(事件相关度{ev.get('relevance', 0)}%)\n"
-            resp += "---\n"
+        # 使用叙述桥梁
+        resp += self._generate_narrative_bridge(clusters)
         
         if self.config.get("encourage_deep_recall", False):
             resp += "\n（注：若想进一步回忆某个事件的细节 or 感想，可以使用 `recall_event_reflection_tool` 并传入对应的 事件ID来深度回想；如果觉得回忆还不够充分，可以使用 `recall_memory_tool` 对刚想起的片段进行联想）"
         return resp
 
+    def _generate_narrative_bridge(self, clusters: List[List[dict]]) -> str:
+        """为聚类后的记忆片段生成叙述性桥梁"""
+        if not clusters:
+            return ""
+        
+        narrative = ""
+        for i, cluster in enumerate(clusters):
+            if len(clusters) > 1:
+                narrative += f"【记忆片段 {i+1}】\n"
+            
+            dates = sorted(list(set(ev['date'] for ev in cluster)))
+            if len(dates) > 1:
+                narrative += f"（这段记忆跨越了 {dates[0]} 到 {dates[-1]}）\n"
+            else:
+                narrative += f"（发生在 {dates[0]}）\n"
+            
+            for ev in cluster:
+                narrative += f"  - {ev['narrative']} [ID: {ev['event_id']}]\n"
+            narrative += "---\n"
+        return narrative
+
     def _rank_events(self, events: List[dict], query: str = "") -> List[dict]:
-        """按照距今日期差、事件重要性、情感强度以及关键词匹配度进行综合排序"""
+        """按照距今日期差、事件重要性、情感强度、关键词匹配度、连贯性以及强化计数进行综合排序"""
         now = datetime.now().date()
         
         # 预处理：计算局部关键词权重 (Simple Local IDF)
-        # 这样可以自动识别出哪些词是“罕见”的（如“相声”），哪些是“常见”的（如“Lanya”）
         word_weights = {}
         if query:
-            # 使用 jieba 进行分词，并过滤掉单字（通常是虚词）
-            # 同时保留英文单词和数字
             query_terms = set([word for word in jieba.lcut(query) if len(word) > 1])
             
             if query_terms:
@@ -758,10 +951,13 @@ class LocalReminiscencePlugin(Star):
                 
                 num_docs = len(events)
                 for term in query_terms:
-                    # IDF 公式：log(总文档数 / (包含该词的文档数 + 1)) + 1
-                    # 这样罕见词的权重会显著高于常见词
                     count = doc_counts.get(term, 0)
                     word_weights[term] = math.log(num_docs / (count + 1.0)) + 1.0
+
+        w_time = self.config.get("weight_time", 1.0)
+        w_importance = self.config.get("weight_importance", 1.0)
+        w_intensity = self.config.get("weight_emotional_intensity", 1.0)
+        w_rare = self.config.get("weight_rare_word", 1.0)
 
         def score_func(ev):
             try:
@@ -775,21 +971,99 @@ class LocalReminiscencePlugin(Star):
             intensity = ev.get('emotional_intensity', 1)
             relevance = (ev.get('relevance', 100) / 100.0) ** 4
             
-            # 关键词加成 (Keyword Bonus)
+            # 关键词加成
             keyword_score = 0.0
             narrative = ev.get('narrative', '')
             for term, weight in word_weights.items():
                 if term in narrative:
                     keyword_score += weight
-            
-            # 关键词加成系数：1.0 + (匹配词的总权重 / 10)
-            # 这样既保留了向量搜索的泛化能力，又给了精准匹配显著的加成
             keyword_bonus = 1.0 + (keyword_score * 0.5)
             
+            # 连贯性权重
+            coherence_score = self._calculate_coherence(ev, events)
+            
+            # 强化计数加成
+            re_intensity = self.config.get("reinforcement_intensity", 1.0)
+            reinforcement_boost = ev.get('reinforcement_count', 0) * 0.1 * re_intensity
+            
             # 综合评分
-            return importance * intensity * date_weight * relevance * keyword_bonus
+            # 使用指数加权，系数为 1.0 时保持原样
+            base_score = (importance ** w_importance) * \
+                         (intensity ** w_intensity) * \
+                         (date_weight ** w_time) * \
+                         relevance * \
+                         (keyword_bonus ** w_rare)
+            return base_score * (1 + coherence_score * 0.3) * (1 + reinforcement_boost)
 
         return sorted(events, key=score_func, reverse=True)
+
+    def _calculate_coherence(self, target_event: dict, all_events: List[dict]) -> float:
+        """计算事件与检索结果集中其他事件的连贯性"""
+        if not all_events:
+            return 0.0
+        
+        coherence = 0.0
+        
+        # 与同日期事件的连贯性
+        same_day_count = sum(1 for e in all_events if e['date'] == target_event['date'])
+        if same_day_count > 1:
+            coherence += 0.2
+        
+        # 与相邻日期事件的连贯性
+        try:
+            target_date = datetime.strptime(target_event['date'], "%Y-%m-%d").date()
+            adjacent_count = 0
+            for e in all_events:
+                if e['event_id'] == target_event['event_id']: continue
+                e_date = datetime.strptime(e['date'], "%Y-%m-%d").date()
+                if abs((e_date - target_date).days) <= 1:
+                    adjacent_count += 1
+            if adjacent_count > 0:
+                coherence += 0.15
+        except:
+            pass
+        
+        # 与相同关系的连贯性
+        for other_ev in all_events:
+            if other_ev['event_id'] != target_event['event_id']:
+                if self.db._has_relation(target_event['event_id'], other_ev['event_id']):
+                    coherence += 0.3
+                    break 
+        
+        return min(coherence, 1.0)
+
+    def _cluster_events_by_context(self, events: List[dict]) -> List[List[dict]]:
+        """将相关事件聚类成"记忆片段"，而非离散事件"""
+        clusters = []
+        used = set()
+        
+        for ev in events:
+            if ev['event_id'] in used:
+                continue
+            
+            cluster = [ev]
+            used.add(ev['event_id'])
+            
+            # 找相关的同日期或相邻日期的事件
+            for other_ev in events:
+                if other_ev['event_id'] in used:
+                    continue
+                
+                is_same_day = ev['date'] == other_ev['date']
+                has_rel = self.db._has_relation(ev['event_id'], other_ev['event_id'])
+                
+                if is_same_day or has_rel:
+                    cluster.append(other_ev)
+                    used.add(other_ev['event_id'])
+            
+            clusters.append(cluster)
+        
+        for cluster in clusters:
+            # 内部按 ID 排序（包含日期和序号），保证叙述逻辑
+            cluster.sort(key=lambda x: x['event_id'])
+        
+        # 片段之间不再按时间排序，保持输入时的相关度顺序
+        return clusters
 
     @llm_tool(name="daily_summary_tool")
     async def daily_summary_tool(self, event: AstrMessageEvent, date: str = "") -> str:
@@ -805,6 +1079,10 @@ class LocalReminiscencePlugin(Star):
                     if hasattr(part, 'text'):
                         result_msg += part.text
         return f"总结任务已完成。执行结果摘要：{result_msg[:100]}..."
+
+    async def _search_events_for_summary(self, query: str, top_n: int = 5, exclude_date: str = None) -> List[dict]:
+        """为总结过程提供的事件搜索接口"""
+        return await self._get_relevant_events(query, top_n=top_n, exclude_date=exclude_date)
 
     async def _daily_summary_logic(self, event: AstrMessageEvent, date_str: str = None):
         # 如果没有直接传入 date_str，则尝试从消息中解析
@@ -848,9 +1126,16 @@ class LocalReminiscencePlugin(Star):
             return
         
         # 寻找聊天记录文件并合并
-        conversation_text = ""
+        conversation_chunks = []
         found_any = False
         
+        max_kb = self.config.get("max_dialogue_kb_per_summary", 20)
+        gap_hours = self.config.get("chunk_time_gap_hours", 3.0)
+
+        current_chunk = []
+        current_size = 0.0
+        last_time = None
+
         for target_user_id in self.target_user_id_list:
             safe_id = target_user_id.replace(":", "_") if target_user_id else ""
             dialog_file = self.dialog_folder / f"{date_str}_dialog_{safe_id}.json"
@@ -882,20 +1167,60 @@ class LocalReminiscencePlugin(Star):
                 conversations = data.get("conversations", [])
                 if conversations:
                     found_any = True
-                    conversation_text += f"\n=== 对话记录 ({target_user_id}) ===\n"
-                    for msg in conversations:
+                    
+                    # 预估文件大小 (KB)
+                    file_text_list = [f"[{m.get('timestamp', '')}] {m.get('role', 'unknown')}: {m.get('content', '')}\n" for m in conversations]
+                    file_size_kb = len("".join(file_text_list).encode('utf-8')) / 1024.0
+                    is_small_file = file_size_kb < (max_kb / 4.0)
+                    
+                    # 检查是否需要在进入新文件前切分（如果当前分段已经满了）
+                    # 即使没有时间间隔，如果已经达到上限，也应该在文件边界切分，避免分段过大
+                    if current_chunk and current_size >= max_kb:
+                        conversation_chunks.append("".join(current_chunk))
+                        current_chunk = []
+                        current_size = 0.0
+
+                    # 添加用户 ID 标识头
+                    header = f"\n=== 对话记录 ({target_user_id}) ===\n"
+                    header_size = len(header.encode('utf-8')) / 1024.0
+                    current_chunk.append(header)
+                    current_size += header_size
+                    
+                    for i, msg in enumerate(conversations):
                         timestamp = msg.get('timestamp', '')
-                        role = msg.get('role', 'unknown')
-                        content = msg.get('content', '')
-                        conversation_text += f"[{timestamp}] {role}: {content}\n"
+                        msg_text = file_text_list[i]
+                        msg_size = len(msg_text.encode('utf-8')) / 1024.0
+                        
+                        time_gap_exceeded = False
+                        if last_time and timestamp:
+                            try:
+                                curr_t = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
+                                prev_t = datetime.strptime(last_time, "%Y-%m-%d %H:%M:%S")
+                                if (curr_t - prev_t).total_seconds() > gap_hours * 3600:
+                                    time_gap_exceeded = True
+                            except:
+                                pass
+                        
+                        # 核心逻辑：如果是小文件，则绝对不在此循环内切分（即挤一挤，不分段）
+                        if not is_small_file and len(current_chunk) > 2 and (current_size + msg_size > max_kb) and time_gap_exceeded:
+                            conversation_chunks.append("".join(current_chunk))
+                            current_chunk = [f"\n=== 对话记录 ({target_user_id}) (续) ===\n"]
+                            current_size = len(current_chunk[0].encode('utf-8')) / 1024.0
+                        
+                        current_chunk.append(msg_text)
+                        current_size += msg_size
+                        last_time = timestamp
             except Exception as e:
                 logger.info(f"[APLR] 读取记录 ({target_user_id}) 的时候出了点小状况：{e}")
+
+        if current_chunk:
+            conversation_chunks.append("".join(current_chunk))
 
         if not found_any:
             logger.info(f"[APLR] 没找到 {date_str} 的任何聊天记录，是不是那天没说话呀？")
             return
 
-        logger.info(f"[APLR] 正在总结 {date_str} 的点点滴滴，稍等一下哦...")
+        logger.info(f"[APLR] 正在总结 {date_str} 的点点滴滴，分成了 {len(conversation_chunks)} 段处理，稍等一下哦...")
         
         # --- 获取 LLM 提供者并初始化总结器 (新版推荐方式) ---
         try:
@@ -920,22 +1245,40 @@ class LocalReminiscencePlugin(Star):
             base_system_prompt = self.config.get("default_prompt", "") if self.config else ""
             base_user_prompt = self.config.get("user_prompts", "") if self.config else ""
 
+            # 注入 Astrbot 自带的人格提示词
+            try:
+                persona = await self.context.persona_manager.get_default_persona_v3(umo=umo)
+                if persona and persona.get('prompt'):
+                    base_system_prompt = (persona['prompt'] + "\n" + base_system_prompt) if base_system_prompt else (persona['prompt'] + "\n")
+                    logger.debug(f"[APLR] 已成功注入 Astrbot 自带的人格设定 (Persona: {persona.get('name', 'Unknown')})")
+                    logger.debug(f"base sys prompt: {base_system_prompt}")
+            except Exception as pe:
+                logger.warning(f"[APLR] 尝试获取 Astrbot 人格设定失败: {pe}")
+
             # 4. 初始化总结器
             summarizer = DailySummarizer(
                 llm_generate_func=llm_generate_func,
                 ai_name=self.ai_name,
                 base_system_prompt=base_system_prompt,
-                base_user_prompt=base_user_prompt
+                base_user_prompt=base_user_prompt,
+                search_events_func=self._search_events_for_summary
             )
 
             # 获取现有节点背景 (总结时放宽上限，允许描述匹配)
-            nodes, _ = await self._get_nodes_context(conversation_text, include_description=True, max_nodes=100)
+            full_text = "\n".join(conversation_chunks)
+            nodes, _ = await self._get_nodes_context(full_text, include_description=True, max_nodes=100)
             existing_nodes_context = ""
             if nodes:
                 existing_nodes_context = "\n".join([f"- {n['name']}: {n['description']}" for n in nodes])
 
             # 5. 异步调用总结生成
-            summary = await summarizer.generate_summary(conversation_text, date_str, existing_nodes_context=existing_nodes_context)
+            enable_phase2 = self.config.get("enable_cross_day_relations", False)
+            summary = await summarizer.generate_summary(
+                conversation_chunks, 
+                date_str, 
+                existing_nodes_context=existing_nodes_context,
+                enable_cross_day_relations=enable_phase2
+            )
 
         except Exception as e:
             logger.error(f"[APLR] 生成总结过程中发生错误: {e}", exc_info=True)
