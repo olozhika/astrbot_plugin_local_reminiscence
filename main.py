@@ -1129,8 +1129,8 @@ class LocalReminiscencePlugin(Star):
         conversation_chunks = []
         found_any = False
         
-        max_kb = self.config.get("max_dialogue_kb_per_summary", 20)
-        gap_hours = self.config.get("chunk_time_gap_hours", 3.0)
+        max_kb = self.config.get("max_dialogue_kb_per_summary", 40)
+        gap_hours = self.config.get("chunk_time_gap_hours", 1.0)
 
         current_chunk = []
         current_size = 0.0
