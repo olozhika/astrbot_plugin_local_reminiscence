@@ -1067,7 +1067,7 @@ class LocalReminiscencePlugin(Star):
 
     @llm_tool(name="daily_summary_tool")
     async def daily_summary_tool(self, event: AstrMessageEvent, date: str = "") -> str:
-        """进行每日总结用的工具，回顾并总结今日或指定日期的交流。除了每日总结环节以外，请不要主动触发！
+        """进行每日总结用的工具，回顾并总结今日或指定日期的交流。除非监护人或Cron job要求，否则请永远不要触发此工具！
         
         Args:
             date(string): 要总结的日期，格式为 YYYY-MM-DD。如果不提供则默认为今天。
