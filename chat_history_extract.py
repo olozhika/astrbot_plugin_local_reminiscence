@@ -16,17 +16,23 @@ def decode_json_unicode(s):
 def decode_unicode_escapes(s):
     """
     将字符串中的 \\uXXXX 转义序列转换为实际 Unicode 字符。
-    例如: "\\u83b7" -> "获"
+    针对代理对（Surrogates）进行了特殊处理，避免产生孤立代理导致 UTF-8 编码失败。
     """
     if not isinstance(s, str):
         return s
-    # 使用正则匹配 \uXXXX 格式
+    
     def replace_unicode(match):
-        code = match.group(1)
+        code_str = match.group(1)
         try:
-            return chr(int(code, 16))
+            code = int(code_str, 16)
+            # 如果是代理区字符 (U+D800 - U+DFFF)，直接返回原字符串
+            # 避免产生孤立代理导致后续 utf-8 编码报错
+            if 0xD800 <= code <= 0xDFFF:
+                return match.group(0)
+            return chr(code)
         except ValueError:
             return match.group(0)
+            
     return re.sub(r'\\u([0-9a-fA-F]{4})', replace_unicode, s)
 
 def get_date_key(ts):
@@ -263,7 +269,7 @@ def clean_dialogue_with_different_limits(
         output_txt = output_dir / f"{date_key}_dialog_{safe_user_id}.txt"
         output_json = output_dir / f"{date_key}_dialog_{safe_user_id}.json"
 
-        with open(output_txt, "w", encoding="utf-8") as f:
+        with open(output_txt, "w", encoding="utf-8", errors="replace") as f:
             f.write("\n".join(daily_txt[date_key]))
 
         metadata = {
@@ -278,7 +284,7 @@ def clean_dialogue_with_different_limits(
             "conversations": daily_json[date_key]
         }
 
-        with open(output_json, "w", encoding="utf-8") as f:
+        with open(output_json, "w", encoding="utf-8", errors="replace") as f:
             json.dump(json_output, f, ensure_ascii=False, indent=2)
 
         print(f"📄 已输出：{output_json}")
