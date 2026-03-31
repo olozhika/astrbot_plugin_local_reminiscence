@@ -1,4 +1,5 @@
 import os
+import re
 from pathlib import Path
 from typing import List, Dict, Optional
 from astrbot.api import logger
@@ -253,7 +254,10 @@ class VectorDB:
         # 替换 "我" 为 ai_name 用于向量化，但不影响存储的原始文本
         embedding_texts = documents
         if self.ai_name:
-            embedding_texts = [text.replace("我", self.ai_name) for text in documents]
+            # 使用正则替换 "我"，但排除 "我们"
+            # 模式：匹配 "我"，且后面不跟着 "们"
+            pattern = r'我(?![们])'
+            embedding_texts = [re.sub(pattern, self.ai_name, text) for text in documents]
             
         # 开启归一化
         embeddings = self.model.encode(embedding_texts, normalize_embeddings=True).tolist()
