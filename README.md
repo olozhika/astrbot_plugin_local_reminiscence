@@ -174,7 +174,7 @@ To use this plugin, you must perform the first three steps!
 | `/write_node_command` | `[名] [类] [述]` | 手动写入或更新记忆节点 |
 | `/extract_chat_history_command` | `[YYYY-MM-DD]` | 从数据库提取指定日期的聊天记录（维护用） |
 | `/update_nodes_command` | `[YYYY-MM-DD]` | 从已有事件中重新提取记忆节点（维护用） |
-| `/vectorize_events` | `[YYYY-MM-DD]` | 将指定日期的事件重新向量化（维护用，比如更换了向量模型后使用） |
+| `/vectorize_events` | `[YYYY-MM-DD]`或`[all]` | 将指定日期的事件重新向量化（维护用，比如更换了向量模型后使用） |
 
 ### 🧰 工具列表 / LLM Tools
 | 工具名称 | 参数 | 说明 |
