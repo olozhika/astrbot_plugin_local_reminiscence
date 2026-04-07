@@ -214,6 +214,10 @@ To use this plugin, you must perform the first three steps!
 
 ![APLR流程图](./mermaid-diagram-.png)
 
+## Also see
+
+**[聊天数据数据库生成器](https://github.com/olozhika/local_reminiscence_generator)**: *暂时别用！作者还没测试！*独立Python程序，使用用户提供的微信、QQ等聊天记录，使用LLM批量提取事件，整理为满足本插件 本地回忆[APLR] 格式的数据库文件，实现网聊记忆数据化。适合用AI帮自己管理记忆或者人格切片、数字飞升等情形（这对吗）
+
 ## 📄 To Do List
 
 - [x] 把回忆权重（重要性 时间衰减等）变成可根据个人需求手动调节的形式
