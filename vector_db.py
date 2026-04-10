@@ -255,8 +255,8 @@ class VectorDB:
         embedding_texts = documents
         if self.ai_name:
             # 使用正则替换 "我"，但排除 "我们"
-            # 模式：匹配 "我"，且后面不跟着 "们"
-            pattern = r'我(?![们])'
+            # 模式：匹配 "我"，且后面不跟着 "们"，前面不跟着 "自"
+            pattern = r'(?<!自)我(?![们])'
             embedding_texts = [re.sub(pattern, self.ai_name, text) for text in documents]
             
         # 开启归一化
@@ -272,6 +272,10 @@ class VectorDB:
     def search_events(self, query: str, top_n: int = 10) -> List[Dict]:
         """搜索最接近的事件 ID 和相关度分数"""
         self._ensure_model()
+        
+        import logging
+        logger = logging.getLogger("AstrBot")
+        logger.debug(f"[APLR] VectorDB 正在搜索: {query}")
         
         # 开启归一化
         query_embedding = self.model.encode([query], normalize_embeddings=True).tolist()
