@@ -20,7 +20,7 @@ import shutil
 import subprocess
 import sys
 
-@register("local_reminiscence", "olozhika", "基于定时总结和向量化的本地记忆插件", "1.2.3")
+@register("local_reminiscence", "olozhika", "基于定时总结和向量化的本地记忆插件", "1.2.2")
 class LocalReminiscencePlugin(Star):
     def __init__(self, context: Context, config: any = None):
         super().__init__(context)
@@ -134,6 +134,8 @@ class LocalReminiscencePlugin(Star):
         """在生成回复前注入历史记忆，帮助 AI 维持长期记忆"""
         try:
             message_str = event.message_str
+            logger.debug(f"[APLR] 收到消息内容 (前100字): {message_str[:100]}...")
+            
             # 1. 检测是否为新对话开启
             uid = event.unified_msg_origin
             conv_mgr = self.context.conversation_manager
@@ -211,9 +213,34 @@ class LocalReminiscencePlugin(Star):
                     req.system_prompt += memory_text
                     logger.info(f"[APLR] 检测到新对话开启，已为会话注入历史记忆，长度: {len(memory_text)}")
 
-            # 0. 提取当前用户的 Nickname
-            nickname_match = re.search(r'<system_reminder>.*?Nickname:\s*([^,\n\s]+)', message_str, re.IGNORECASE)
-            current_nickname = nickname_match.group(1).strip() if nickname_match else self.username
+            # 0. 提取当前用户的 Nickname (增强版逻辑)
+            current_nickname = None
+            
+            # 策略 A: 尝试从标签中提取
+            tag_match = re.search(r'<system_reminder>(.*?)</system_reminder>', message_str, re.IGNORECASE | re.DOTALL)
+            if tag_match:
+                tag_content = tag_match.group(1)
+                nick_match = re.search(r'Nickname:\s*([^,\s]+)', tag_content, re.IGNORECASE)
+                if nick_match:
+                    current_nickname = nick_match.group(1).strip()
+                    logger.debug(f"[APLR] 从标签中成功提取 Nickname: {current_nickname}")
+            
+            # 策略 B: 兜底方案，如果标签提取失败，直接全文搜索关键词
+            if not current_nickname:
+                nick_match = re.search(r'Nickname:\s*([^,\s]+)', message_str, re.IGNORECASE)
+                if nick_match:
+                    current_nickname = nick_match.group(1).strip()
+                    logger.debug(f"[APLR] 标签提取失败，通过全文搜索提取 Nickname: {current_nickname}")
+            
+            if not current_nickname:
+                logger.debug(f"[APLR] 无法从消息中提取 Nickname")
+            
+            # 清理消息内容（去除系统提示词部分，避免干扰检索）
+            clean_message = re.sub(r'<system_reminder>.*?</system_reminder>', '', message_str, flags=re.DOTALL).strip()
+            if not clean_message:
+                clean_message = message_str
+            
+            logger.debug(f"[APLR] 清理后的消息内容: {clean_message}")
             
             # 1. 获取所有相关节点
             all_nodes = []
@@ -221,12 +248,16 @@ class LocalReminiscencePlugin(Star):
             
             # 首先尝试获取用户本人节点
             if current_nickname:
+                logger.debug(f"[APLR] 正在搜索用户节点: {current_nickname}")
                 user_nodes = self.db.search_nodes(current_nickname, limit=1, include_description=False)
                 if user_nodes:
                     node = user_nodes[0]
+                    logger.debug(f"[APLR] 找到用户节点: {node['name']} (ID: {node['id']})")
                     node['is_user'] = True # 标记为当前聊天对象
                     all_nodes.append(node)
                     seen_names.add(node['name'])
+                else:
+                    logger.debug(f"[APLR] 未找到用户节点: {current_nickname}")
 
             # 获取消息相关的节点
             msg_nodes, _ = await self._get_nodes_context(message_str, include_description=False)
@@ -252,15 +283,17 @@ class LocalReminiscencePlugin(Star):
             auto_recall_threshold = self.config.get("auto_recall_threshold", 40.0)
             
             # 命中关键词或概率触发
-            hit_keyword = any(kw in message_str for kw in keywords)
+            hit_keyword = any(kw in clean_message for kw in keywords)
             hit_prob = random.random() <= auto_recall_prob
             
             if hit_keyword or hit_prob:
                 # 构造检索词：用户名: 用户发言
-                search_query = message_str
-                if nickname_match:
-                    username = nickname_match.group(1).strip()
-                    search_query = f"{username}: {message_str}"
+                if current_nickname:
+                    search_query = f"{current_nickname}: {clean_message}"
+                else:
+                    search_query = clean_message
+                
+                logger.debug(f"[APLR] 触发记忆检索，检索词: {search_query}")
                 
                 top_n = self.config.get("top_n_events", 10)
                 m1 = self.config.get("m1_top_events", 3)
@@ -841,7 +874,9 @@ class LocalReminiscencePlugin(Star):
         # 2. 向量检索
         search_query = query
         if self.ai_name:
-            search_query = query.replace("我", self.ai_name)
+            # 使用正则替换 "我"，但排除 "我们" 和 "自我"
+            pattern = r'(?<!自)我(?![们])'
+            search_query = re.sub(pattern, self.ai_name, query)
             
         search_results = self.vector_db.search_events(search_query, top_n=top_n)
         if not search_results:
@@ -1067,7 +1102,7 @@ class LocalReminiscencePlugin(Star):
 
     @llm_tool(name="daily_summary_tool")
     async def daily_summary_tool(self, event: AstrMessageEvent, date: str = "") -> str:
-        """进行每日总结用的工具，回顾并总结今日或指定日期的交流。除非监护人或Cron job要求，否则请永远不要触发此工具！
+        """进行每日总结用的工具，回顾并总结今日或指定日期的交流。除了每日总结环节以外，请不要主动触发！
         
         Args:
             date(string): 要总结的日期，格式为 YYYY-MM-DD。如果不提供则默认为今天。
@@ -1215,6 +1250,21 @@ class LocalReminiscencePlugin(Star):
 
         if current_chunk:
             conversation_chunks.append("".join(current_chunk))
+
+        # 在发送给总结器之前，尝试注入 thoughts 插件的中期记忆
+        if conversation_chunks:
+            thoughts_data_path = Path.cwd() / "data" / "plugin_data" / "astrbot_plugin_thoughts" / "interim_memory.json"
+            if thoughts_data_path.exists():
+                try:
+                    with open(thoughts_data_path, "r", encoding="utf-8") as f:
+                        interim_memories = json.load(f)
+                        if isinstance(interim_memories, list) and interim_memories:
+                            content = "\n".join(interim_memories)
+                            interim_header = f"\n=== 中期记忆 ===\n{content}\n"
+                            conversation_chunks[0] = interim_header + conversation_chunks[0]
+                            logger.info(f"[APLR] 已成功注入 thoughts 插件的中期记忆到第一段总结背景中。")
+                except Exception as e:
+                    logger.error(f"[APLR] 读取 thoughts 中期记忆失败: {e}")
 
         if not found_any:
             logger.info(f"[APLR] 没找到 {date_str} 的任何聊天记录，是不是那天没说话呀？")
