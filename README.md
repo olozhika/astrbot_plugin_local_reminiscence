@@ -18,6 +18,7 @@ A lightweight local memory plugin for AstrBot that uses local embedding models a
 3. **支持每日总结环节的外部数据注入**：支持通过在 `dialog_folder` 放入 `YYYY-MM-DD_context_名称.txt` 文件（如 `2026-04-12_context_Health.txt`）来注入任何外部数据到每日总结，实现全方位记忆
 4. **无效JSON自动修复**：增加对 LLM 输出破损 JSON 的启发式修复，能更稳健地处理字符串内部未转义的引号，减少总结失败率
 5. 把提供给AI的`recall_daily_reflection_tool`和`recall_event_reflection_tool`及新增的主题回忆工具合并为`deep_recall_tool`
+6. 优化指令组（详见 指令和工具）
 
 #### 老用户升级
 对于记忆数据库里已经有200条以上事件的用户，可以考虑执行`/memory_consolidation`实现全局记忆主题归类（建议每隔数月到数年重新执行一次本指令）
@@ -188,15 +189,15 @@ To use this plugin, you must perform the first three steps!
 ### 🛠️ 指令列表 / Commands
 | 指令 | 参数 | 说明 |
 | :--- | :--- | :--- |
-| `/daily_summary_command` | `[YYYY-MM-DD]` | 手动触发指定日期的总结（仅管理员） |
-| `/memory_consolidation` | | 执行全局记忆主题归类（大固化），重新聚类所有记忆（仅管理员） |
-| **APLR_recall** | | **记忆检索指令组（仅管理员）** |
+| `/daily_summary_command` | `[YYYY-MM-DD]` | 手动触发指定日期的总结 |
+| `/memory_consolidation` | | 执行全局记忆主题归类（大固化），重新聚类所有记忆 |
+| **APLR_recall** | | **记忆检索指令组** |
 | └ `memory` | `[text] [count]` | 根据输入文本手动搜索相关记忆 |
 | └ `deep` | `[ID/日期] [模式]` | 深度回想。支持事件ID(evt_)、主题ID(theme_)或日期(YYYY-MM-DD) |
 | └ `recent` | `[天数] [分数]` | 获取最近一段时间内重要或情感强烈的事件 |
 | └ `node` | `[name]` | 搜索特定的记忆节点 |
 | └ `theme` | `[主题ID]` | 查看已固化的主题记忆详情或列表 |
-| **APLR_maintenance** | | **维护指令组（仅管理员）** |
+| **APLR_maintenance** | | **维护指令组** |
 | └ `vectorize` | `[YYYY-MM-DD/all]` | 将指定日期的事件重新向量化 |
 | └ `update_nodes` | `[YYYY-MM-DD]` | 从已有事件中重新提取记忆节点 |
 | └ `write_node` | `[名] [类] [述]` | 手动写入或更新记忆节点 |
