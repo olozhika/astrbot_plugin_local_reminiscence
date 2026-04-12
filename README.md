@@ -18,7 +18,7 @@ A lightweight local memory plugin for AstrBot that uses local embedding models a
 3. **支持每日总结环节的外部数据注入**：支持通过在 `dialog_folder` 放入 `YYYY-MM-DD_context_名称.txt` 文件（如 `2026-04-12_context_Health.txt`）来注入任何外部数据到每日总结，实现全方位记忆
 4. **无效JSON自动修复**：增加对 LLM 输出破损 JSON 的启发式修复，能更稳健地处理字符串内部未转义的引号，减少总结失败率
 5. 把提供给AI的`recall_daily_reflection_tool`和`recall_event_reflection_tool`及新增的主题回忆工具合并为`deep_recall_tool`
-6. 优化指令组结构和名称（详见 指令和工具），且将指令默认权限改完限管理员
+6. 优化指令组结构和名称（详见 指令和工具），且将指令默认权限改为限管理员
 
 #### 老用户升级
 对于记忆数据库里已经有200条以上事件的用户，可以考虑执行`/memory_consolidation`实现全局记忆主题归类（建议每隔数月到数年重新执行一次本指令）
