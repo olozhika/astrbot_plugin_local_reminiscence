@@ -188,17 +188,19 @@ To use this plugin, you must perform the first three steps!
 ### 🛠️ 指令列表 / Commands
 | 指令 | 参数 | 说明 |
 | :--- | :--- | :--- |
-| `/daily_summary_command` | `[YYYY-MM-DD]` | 手动触发指定日期的总结（默认为今天） |
-| `/recall_memory_command` | `[text] [count]` | 根据输入文本手动搜索相关记忆 |
-| `/recall_node_command` | `[name]` | 搜索特定的记忆节点 |
-| `/deep_recall_command` | `[ID/日期] [模式]` | 深度回想。支持事件ID(evt_)、主题ID(theme_)或日期(YYYY-MM-DD) |
-| `/recall_recent_events_command` | `[天数] [分数]` | 获取最近一段时间内重要或情感强烈的事件 |
-| `/recall_theme_command` | `[主题ID]` | 查看已固化的主题记忆详情或列表 |
-| `/memory_consolidation` | | 执行全局记忆主题归类，重新聚类所有记忆 |
-| `/write_node_command` | `[名] [类] [述]` | 手动写入或更新记忆节点 |
-| `/extract_chat_history_command` | `[YYYY-MM-DD]` | 从数据库提取指定日期的聊天记录（维护用） |
-| `/update_nodes_command` | `[YYYY-MM-DD]` | 从已有事件中重新提取记忆节点（维护用） |
-| `/vectorize_events` | `[YYYY-MM-DD]`或`[all]` | 将指定日期的事件重新向量化（维护用） |
+| `/daily_summary_command` | `[YYYY-MM-DD]` | 手动触发指定日期的总结（仅管理员） |
+| `/memory_consolidation` | | 执行全局记忆主题归类（大固化），重新聚类所有记忆（仅管理员） |
+| **APLR_recall** | | **记忆检索指令组（仅管理员）** |
+| └ `memory` | `[text] [count]` | 根据输入文本手动搜索相关记忆 |
+| └ `deep` | `[ID/日期] [模式]` | 深度回想。支持事件ID(evt_)、主题ID(theme_)或日期(YYYY-MM-DD) |
+| └ `recent` | `[天数] [分数]` | 获取最近一段时间内重要或情感强烈的事件 |
+| └ `node` | `[name]` | 搜索特定的记忆节点 |
+| └ `theme` | `[主题ID]` | 查看已固化的主题记忆详情或列表 |
+| **APLR_maintenance** | | **维护指令组（仅管理员）** |
+| └ `vectorize` | `[YYYY-MM-DD/all]` | 将指定日期的事件重新向量化 |
+| └ `update_nodes` | `[YYYY-MM-DD]` | 从已有事件中重新提取记忆节点 |
+| └ `write_node` | `[名] [类] [述]` | 手动写入或更新记忆节点 |
+| └ `extract_history` | `[YYYY-MM-DD]` | 从数据库提取指定日期的聊天记录 |
 
 ### 🧰 工具列表 / LLM Tools
 | 工具名称 | 参数 | 说明 |
