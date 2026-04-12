@@ -14,6 +14,7 @@ from astrbot.api.provider import ProviderRequest
 from astrbot.core.conversation_mgr import Conversation
 from .database import MemoryDB
 from .summarizer import DailySummarizer
+from .memory_consolidation import ThematicConsolidator
 from .chat_history_extract import clean_dialogue_with_different_limits
 import random
 import shutil
@@ -57,6 +58,7 @@ class LocalReminiscencePlugin(Star):
             import torch
             import sentence_transformers
             import chromadb
+            import sklearn
             logger.info("[APLR] 已检测到 AI 相关依赖，跳过安装。")
         except ImportError:
             if self.offline_mode:
@@ -69,8 +71,8 @@ class LocalReminiscencePlugin(Star):
                         sys.executable, "-m", "pip", "install", "torch", 
                         "--index-url", "https://download.pytorch.org/whl/cpu"
                     ])
-                    # 2. 再安装 sentence-transformers 和 chromadb
-                    pip_cmd = [sys.executable, "-m", "pip", "install", "sentence-transformers", "chromadb"]
+                    # 2. 再安装 sentence-transformers, chromadb, scikit-learn
+                    pip_cmd = [sys.executable, "-m", "pip", "install", "sentence-transformers", "chromadb", "scikit-learn"]
                     if self.hf_endpoint:
                         # 如果配置了 hf_endpoint (通常是境内镜像)，则使用国内 PyPI 镜像加速依赖安装
                         pip_cmd.extend(["-i", "https://pypi.tuna.tsinghua.edu.cn/simple"])
@@ -128,13 +130,16 @@ class LocalReminiscencePlugin(Star):
             offline_mode=self.offline_mode,
             ai_name=self.ai_name
         )
+        
+        # 延迟初始化固化器，因为需要 LLM 函数
+        self.consolidator = None
 
     @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
         """在生成回复前注入历史记忆，帮助 AI 维持长期记忆"""
         try:
             message_str = event.message_str
-            logger.debug(f"[APLR] 收到消息内容 (前100字): {message_str[:100]}...")
+            #logger.debug(f"[APLR] 收到消息内容 (前100字): {message_str[:100]}...")
             
             # 1. 检测是否为新对话开启
             uid = event.unified_msg_origin
@@ -158,7 +163,7 @@ class LocalReminiscencePlugin(Star):
                 reflections = self.db.get_reflections(7)
                 
                 if summaries or reflections:
-                    memory_text = "\n\n【历史记忆 - 这是你对过去几天的回忆】\n"
+                    memory_text = "\n\n【历史记忆 - 对过去几天的回忆】\n"
                     
                     if summaries:
                         memory_text += "### 最近3天的深度回忆\n"
@@ -197,7 +202,7 @@ class LocalReminiscencePlugin(Star):
                                     tags_str = f" #{' #'.join(e['tags'])}" if e['tags'] else ""
                                     memory_text += f"  - {e['narrative']} ({e['emotion']}) [ID: {e['event_id']}]\n"
                                 if self.config.get("encourage_deep_recall", False):
-                                    memory_text += "注：若想进一步回忆某个事件的细节或感想，可以使用 `recall_event_reflection_tool` 并传入对应的 事件ID来深度回想；如果觉得回忆还不够充分，可以使用 `recall_memory_tool` 对刚想起的片段进行联想）\n"
+                                    memory_text += "注：若想进一步回忆某个事件的细节或感想，可以使用 `deep_recall_tool` 并传入对应的 事件ID、主题ID或日期来深度回想；如果觉得回忆还不够充分，可以使用 `recall_memory_tool` 对刚想起的片段进行联想）\n"
                             memory_text += "---\n"
                     
                     if reflections:
@@ -272,12 +277,12 @@ class LocalReminiscencePlugin(Star):
                     last_updated_date = n['last_updated'].split(' ')[0] if n['last_updated'] else "未知"
                     context_parts.append(f"📌 {n['name']}，{n['description']}。(最后更新: {last_updated_date})")
                 
-                injection_text = f"\n\n【记忆节点背景 - 这是你对提及实体及当前聊天对象的已知认知】\n" + "\n\n".join(context_parts) + "\n"
+                injection_text = f"\n\n【记忆节点背景 - 对提及实体及当前聊天对象的已知认知】\n" + "\n\n".join(context_parts) + "\n"
                 req.system_prompt += injection_text
                 logger.info(f"[APLR] 自动注入了 {len(all_nodes)} 个记忆节点: {', '.join([n['name'] for n in all_nodes])}")
 
             # 0. 自动触发记忆检索 (语义匹配) - 放在新会话注入后面，且非新会话也会触发
-            keywords = ["之前", "记得", "回忆", "想起", "以前", "过去"]
+            keywords = ["之前", "记得", "回忆", "想起", "以前", "过去", "曾经"]
             
             auto_recall_prob = self.config.get("auto_recall_probability", 0.3)
             auto_recall_threshold = self.config.get("auto_recall_threshold", 40.0)
@@ -329,7 +334,7 @@ class LocalReminiscencePlugin(Star):
                             recall_text += self._generate_narrative_bridge(clusters)
                             
                             if self.config.get("encourage_deep_recall", False):
-                                recall_text += "（注：若想进一步回忆某个事件的细节或感想，可以使用 `recall_event_reflection_tool` 并传入对应的 事件ID来深度回想；如果觉得回忆还不够充分，可以使用 `recall_memory_tool` 对刚想起的片段进行联想）"
+                                recall_text += "（注：若想进一步回忆某个事件的细节或感想，可以使用 `deep_recall_tool` 并传入对应的 事件ID、主题ID或日期来深度回想；如果觉得回忆还不够充分，可以使用 `recall_memory_tool` 对刚想起的片段进行联想）"
                             req.system_prompt += recall_text
                             trigger_reason = "关键词" if hit_keyword else "概率"
                             logger.info(f"[APLR] 自动触发记忆检索({trigger_reason})，注入了 {len(selected_events)} 条相关记忆")
@@ -435,16 +440,46 @@ class LocalReminiscencePlugin(Star):
                     yield event.plain_result("数据库中没有找到任何事件。")
                     return
                 
-                # 3. 分批向量化（防止内存溢出或超时）
+                # 3. 分批向量化事件
                 batch_size = 50
                 total = len(all_events)
                 for i in range(0, total, batch_size):
                     batch = all_events[i:i + batch_size]
                     self.vector_db.add_events(batch)
                     if i % 100 == 0 or i + batch_size >= total:
-                        logger.info(f"[APLR] 向量化进度: {min(i + batch_size, total)}/{total}")
+                        logger.info(f"[APLR] 事件向量化进度: {min(i + batch_size, total)}/{total}")
                 
-                yield event.plain_result(f"✅ 已成功重新向量化全部 {total} 个事件。")
+                # 4. 向量化主题 (现场计算重心)
+                all_themes = self.db.get_all_thematic_memories()
+                if all_themes:
+                    themes_to_add = []
+                    event_collection = self.vector_db.client.get_collection("events")
+                    
+                    for t in all_themes:
+                        theme_id = t['theme_id']
+                        # 获取该主题下的所有事件 ID
+                        theme_events = self.db.get_events_by_theme(theme_id)
+                        if not theme_events:
+                            continue
+                        
+                        t_event_ids = [te['event_id'] for te in theme_events]
+                        # 从向量库获取这些事件的向量
+                        res = event_collection.get(ids=t_event_ids, include=['embeddings'])
+                        if res['embeddings']:
+                            # 计算重心
+                            embs = np.array(res['embeddings'], dtype=np.float32)
+                            centroid = np.mean(embs, axis=0)
+                            themes_to_add.append({
+                                "theme_id": theme_id,
+                                "centroid": centroid.tolist(),
+                                "summary": t['summary']
+                            })
+                    
+                    if themes_to_add:
+                        self.vector_db.add_themes(themes_to_add)
+                        logger.info(f"[APLR] 已重新计算并向量化 {len(themes_to_add)} 个主题。")
+                
+                yield event.plain_result(f"✅ 已成功重新向量化全部 {total} 个事件和 {len(themes_to_add)} 个主题。")
             except Exception as e:
                 logger.error(f"重新向量化全部失败: {e}")
                 yield event.plain_result(f"❌ 重新向量化全部失败: {e}")
@@ -600,16 +635,116 @@ class LocalReminiscencePlugin(Star):
                 
         return result
 
-    @llm_tool(name="recall_event_reflection_tool")
-    async def recall_event_reflection_tool(self, event: AstrMessageEvent, event_id: str) -> str:
-        """获取特定事件的深度观察和感想。当你看到某个事件的简述（narrative）并希望回想更多细节或当时的心理活动时使用。
+    @llm_tool(name="deep_recall_tool")
+    async def deep_recall_tool(self, event: AstrMessageEvent, target: str, mode: str = "") -> str:
+        """深度回想工具。当你已经获得一个特定的线索（ID或日期）并希望挖掘更多细节时使用。
+        
+        支持以下输入格式：
+        1. 事件ID (以 evt_ 开头)：回想特定往事的深度感想和细节。
+        2. 主题ID (以 theme_ 开头)：从宏观主题中联想出 3 个具体的代表性记忆片段。
+        3. 日期 (YYYY-MM-DD 格式)：回想那一天的整体心境和感悟。
         
         Args:
-            event_id(string): 事件的唯一ID（如 evt_20260312_001）。
+            target(string): 要深度回想的目标（ID或日期）。
+            mode(string): 联想模式（仅对主题有效）。可选：'类人'(均衡)、'时间'(侧重近期)、'情绪'(侧重强烈情感)、'随机'(完全随机)。留空则使用系统默认权重。
         """
-        if not event_id:
-            return "错误：需要提供事件ID event_id。"
-        return await self._get_event_reflection_logic(event_id)
+        if not target:
+            return "错误：需要提供回想目标 target。"
+        
+        target = target.strip()
+        
+        # 1. 处理事件 ID
+        if target.startswith("evt_"):
+            return await self._get_event_reflection_logic(target)
+            
+        # 2. 处理主题 ID
+        elif target.startswith("theme_"):
+            return await self._get_theme_recall_logic(target, mode)
+            
+        # 3. 处理日期格式 (YYYY-MM-DD)
+        elif re.match(r'^\d{4}-\d{2}-\d{2}$', target):
+            return await self._get_daily_reflection_logic(target)
+            
+        else:
+            return f"错误：无法识别的回想目标格式 '{target}'。请确保输入的是事件ID(evt_...)、主题ID(theme_...)或日期(YYYY-MM-DD)。"
+
+    async def _get_theme_recall_logic(self, theme_id: str, mode: str = "") -> str:
+        """从主题中进行概率不均等的随机抽取事件"""
+        theme = self.db.get_thematic_memory(theme_id)
+        if not theme:
+            return f"未找到 ID 为 {theme_id} 的主题记忆。"
+            
+        events = self.db.get_events_by_theme(theme_id)
+        if not events:
+            return f"主题 {theme_id} 下暂时没有关联的具体事件。"
+            
+        # 确定权重模式
+        mode = mode.strip()
+        if mode == "类人":
+            w_time, w_importance, w_intensity = 1.0, 1.0, 1.0
+        elif mode == "时间":
+            w_time, w_importance, w_intensity = 1.0, 0.0, 0.0
+        elif mode == "情绪":
+            w_time, w_importance, w_intensity = 0.0, 0.0, 1.0
+        elif mode == "随机":
+            w_time, w_importance, w_intensity = 0.0, 0.0, 0.0
+        else:
+            # 默认使用配置
+            w_time = self.config.get("weight_time", 1.0)
+            w_importance = self.config.get("weight_importance", 1.0)
+            w_intensity = self.config.get("weight_emotional_intensity", 1.0)
+            if mode:
+                logger.debug(f"[APLR] 无效的回想模式 '{mode}'，已回退到系统默认权重。")
+
+        # 计算每个事件的权重
+        now = datetime.now().date()
+        weights = []
+        for ev in events:
+            try:
+                ev_date = datetime.strptime(ev['date'], "%Y-%m-%d").date()
+                days_diff = (now - ev_date).days
+                date_weight = 1.0 / (1 + math.log1p(days_diff / 30.0))
+            except:
+                date_weight = 0.1
+                
+            importance = ev.get('importance', 5)
+            intensity = ev.get('emotional_intensity', 5)
+            
+            # 综合权重公式
+            score = (importance ** w_importance) * \
+                    (intensity ** w_intensity) * \
+                    (date_weight ** w_time)
+            weights.append(max(0.001, score)) # 确保权重不为0
+            
+        # 概率不均等随机抽取 (固定为 3 条)
+        import random
+        num_to_sample = min(len(events), 3)
+        
+        sampled_events = []
+        available_indices = list(range(len(events)))
+        available_weights = list(weights)
+        
+        for _ in range(num_to_sample):
+            if not available_indices: break
+            idx_in_available = random.choices(range(len(available_indices)), weights=available_weights, k=1)[0]
+            real_idx = available_indices.pop(idx_in_available)
+            available_weights.pop(idx_in_available)
+            sampled_events.append(events[real_idx])
+            
+        # 格式化输出
+        resp = f"📂 **【主题深度回想：{theme_id}】** (模式: {mode if mode in ['类人', '时间', '情绪', '随机'] else '默认'})\n"
+        resp += f"💭 核心感悟: {theme['summary']}\n\n"
+        resp += f"💡 联想到了以下 {len(sampled_events)} 个代表性片段：\n"
+        
+        # 按日期排序展示
+        sampled_events.sort(key=lambda x: x['date'])
+        for ev in sampled_events:
+            resp += f"  - [{ev['date']}] {ev['narrative']} [ID: {ev['event_id']}]\n"
+            
+        if self.config.get("encourage_deep_recall", False):
+            resp += "\n（注：若想进一步了解某个片段的细节，可继续对该 事件ID 使用 `deep_recall_tool`）"
+            
+        return resp
 
     async def _get_event_reflection_logic(self, event_id: str) -> str:
         ev = self.db.get_event_by_id(event_id)
@@ -621,20 +756,9 @@ class LocalReminiscencePlugin(Star):
                 res = f"该事件 ({event_id}) 暂时没有记录深度感想呢。"
             
             if self.config.get("encourage_deep_recall", False):
-                res += f"\n（注：若希望回忆该事件发生当天 ({ev['date']}) 的整体心境，可选择调用 `recall_daily_reflection_tool`。）"
+                res += f"\n（注：若希望回忆该事件发生当天 ({ev['date']}) 的整体心境，可选择对日期使用 `deep_recall_tool`。）"
             return res
         return f"未找到 ID 为 {event_id} 的事件。"
-
-    @llm_tool(name="recall_daily_reflection_tool")
-    async def recall_daily_reflection_tool(self, event: AstrMessageEvent, date: str) -> str:
-        """获取特定日期的每日自由心得（感悟）。想回忆某天的整体心境时使用。
-        
-        Args:
-            date(string): 日期，格式为 YYYY-MM-DD。
-        """
-        if not date:
-            return "错误：需要提供日期 date。"
-        return await self._get_daily_reflection_logic(date)
 
     @llm_tool(name="recall_recent_events_tool")
     async def recall_recent_events_tool(self, event: AstrMessageEvent, days: int = 7, min_score: int = 20) -> str:
@@ -668,90 +792,25 @@ class LocalReminiscencePlugin(Star):
                 return f"那天 ({date}) 好像没写下什么特别的感悟呢。"
         return f"数据库里没找到关于 {date} 的感悟记录。"
 
-    @filter.command("recall_event_reflection_command")
-    async def recall_event_reflection_command(self, event: AstrMessageEvent, event_id: str = ""):
-        """获取特定事件的深度观察和感想。用法：/recall_event_reflection_command [事件ID]"""
-        event_id = event_id.strip()
-        if not event_id:
-            yield event.plain_result("请输入事件ID（如 evt_20260312_001）。")
-            return
+    @filter.command("deep_recall_command")
+    async def deep_recall_command(self, event: AstrMessageEvent):
+        """深度回想。用法：/deep_recall_command [ID或日期] [模式(可选)]。"""
+        msg = event.message_str.strip()
+        # 移除命令名
+        content = re.sub(r'^/?deep_recall_command\s*', '', msg).strip()
         
-        res = await self._get_event_reflection_logic(event_id)
-        yield event.plain_result(res)
-
-    @filter.command("recall_daily_reflection_command")
-    async def recall_daily_reflection_command(self, event: AstrMessageEvent, date: str = ""):
-        """获取特定日期的每日自由心得（感悟）。用法：/recall_daily_reflection_command [日期(YYYY-MM-DD)]"""
-        date = date.strip()
-        if not date:
-            yield event.plain_result("请输入日期（如 2026-03-12）。")
-            return
-        
-        res = await self._get_daily_reflection_logic(date)
-        yield event.plain_result(res)
-
-    @filter.command("rebuild_relations_command")
-    async def rebuild_relations_command(self, event: AstrMessageEvent, date: str = ""):
-        """为特定日期的事件重新发现跨日关联。用法：/rebuild_relations_command [日期(YYYY-MM-DD)]"""
-        date = date.strip()
-        if not date:
-            yield event.plain_result("请输入日期（如 2026-03-12）。")
-            return
-        
-        # 1. 获取该日期的所有事件
-        events = self.db.get_events_by_date(date)
-        if not events:
-            yield event.plain_result(f"数据库中未找到日期为 {date} 的事件。")
-            return
-        
-        yield event.plain_result(f"正在为 {date} 的 {len(events)} 个事件重新发现跨日关联，请稍候...")
-        
-        # 2. 初始化总结器
-        provider_id = self.config.get("llm_provider_id")
-        if not provider_id:
-            yield event.plain_result("未配置 LLM Provider，无法执行关联发现。")
+        if not content:
+            yield event.plain_result("用法：/deep_recall_command [事件ID|主题ID|日期] [模式(可选)]\n模式支持：类人、时间、情绪、随机")
             return
             
-        async def llm_generate_func(prompt, system_prompt):
-            return await self.context.llm_generate(
-                chat_provider_id=provider_id,
-                prompt=prompt,
-                system_prompt=system_prompt,
-                history=[]
-            )
+        parts = content.split()
+        target = parts[0]
+        mode = ""
+        if len(parts) > 1:
+            mode = parts[1]
             
-        # 获取基础提示词并注入 Astrbot 自带的人格提示词
-        base_system_prompt = self.config.get("default_prompt", "") if self.config else ""
-        base_user_prompt = self.config.get("user_prompts", "") if self.config else ""
-        try:
-            umo = event.unified_msg_origin
-            persona = await self.context.persona_manager.get_default_persona_v3(umo=umo)
-            if persona and persona.get('prompt'):
-                base_system_prompt = (persona['prompt'] + "\n" + base_system_prompt) if base_system_prompt else (persona['prompt'] + "\n")
-                logger.debug(f"已注入Astrbot人格设定")
-                logger.debug(f"base sys prompt: {base_system_prompt}")
-        except Exception as pe:
-            logger.warning(f"[APLR] 尝试获取 Astrbot 人格设定失败: {pe}")
-
-        summarizer = DailySummarizer(
-            llm_generate_func=llm_generate_func,
-            ai_name=self.ai_name,
-            base_system_prompt=base_system_prompt,
-            base_user_prompt=base_user_prompt,
-            search_events_func=self._search_events_for_summary
-        )
-        
-        # 3. 发现关联
-        try:
-            relations = await summarizer.discover_cross_day_relations(events, date)
-            if relations:
-                self.db.insert_relations(relations)
-                yield event.plain_result(f"成功为 {date} 发现了 {len(relations)} 条新的跨日关联并已存入数据库。")
-            else:
-                yield event.plain_result(f"未发现 {date} 的事件与往日记忆有实质性关联。")
-        except Exception as e:
-            logger.error(f"执行 rebuild_relations_command 失败: {e}", exc_info=True)
-            yield event.plain_result(f"执行失败: {e}")
+        res = await self.deep_recall_tool(event, target, mode)
+        yield event.plain_result(res)
 
     @filter.command("recall_recent_events_command")
     async def recall_recent_events_command(self, event: AstrMessageEvent, days: str = "7", min_score: str = "20"):
@@ -861,90 +920,208 @@ class LocalReminiscencePlugin(Star):
         return f"未找到关于 {name} 的节点信息。"
 
     async def _get_memory_retrieval_text(self, query: str, count: int = None) -> str:
-        # 1. 获取配置
+        # 1. 获取基础配置
         if count:
             m1 = count
-            m2 = round(count / 2)
-            top_n = round(count * 2.5)
+            m2 = 0 # 既然指定了数量，通常是为了精确检索，减少随机干扰
+            top_n = max(10, count * 2)
         else:
             top_n = self.config.get("top_n_events", 10)
             m1 = self.config.get("m1_top_events", 3)
             m2 = self.config.get("m2_random_events", 2)
 
-        # 2. 向量检索
+        # 2. 向量检索 (同时检索事件和主题)
         search_query = query
         if self.ai_name:
-            # 使用正则替换 "我"，但排除 "我们" 和 "自我"
             pattern = r'(?<!自)我(?![们])'
             search_query = re.sub(pattern, self.ai_name, query)
             
-        search_results = self.vector_db.search_events(search_query, top_n=top_n)
+        search_results = self.vector_db.search_all(search_query, top_n_events=top_n, top_n_themes=5)
         if not search_results:
             return "暂时没有找到相关的记忆呢。"
 
-        # 3. 获取完整信息并合并相关度
-        full_events = []
-        for res in search_results:
-            eid = res['event_id']
-            relevance = res['relevance']
-            ev = self.db.get_event_by_id(eid)
-            if ev:
-                ev['relevance'] = relevance 
-                full_events.append(ev)
+        # 3. 统一评分竞技场
+        candidates = []
+        now = datetime.now().date()
         
-        if not full_events:
+        # 预处理关键词权重用于事件评分
+        query_terms = set([word for word in jieba.lcut(search_query) if len(word) > 1])
+        
+        for res in search_results:
+            rid = res['id']
+            relevance = res['relevance']
+            rtype = res['type']
+            
+            if rtype == "event":
+                ev = self.db.get_event_by_id(rid)
+                if ev:
+                    # 计算事件综合得分 (参考 _rank_events 逻辑)
+                    score = self._calculate_single_event_score(ev, relevance, query_terms, now)
+                    candidates.append({
+                        "type": "event",
+                        "score": score,
+                        "data": ev
+                    })
+            elif rtype == "theme":
+                theme = self.db.get_thematic_memory(rid)
+                if theme:
+                    # 获取该主题下所有事件，用于计算时间权重和平均重要性
+                    theme_events = self.db.get_events_by_theme(rid)
+                    theme_score = self._calculate_theme_score(theme, theme_events, relevance, now)
+                    candidates.append({
+                        "type": "theme",
+                        "score": theme_score,
+                        "data": theme
+                    })
+
+        if not candidates:
             return "检索到了 ID 但没能从数据库找到详细信息。"
 
-        # 4. 排序
-        ranked_events = self._rank_events(full_events, search_query)
+        # 4. 统一排序
+        candidates.sort(key=lambda x: x['score'], reverse=True)
 
-        # 5. 选择 M1 + M2
-        selected_events = ranked_events[:m1]
-        remaining = ranked_events[m1:]
+        # 5. 筛选 M1 + M2 (平等竞争)
+        selected_items = candidates[:m1]
+        remaining = candidates[m1:]
         if remaining and m2 > 0:
-            selected_events.extend(random.sample(remaining, min(len(remaining), m2)))
+            selected_items.extend(random.sample(remaining, min(len(remaining), m2)))
 
-        if selected_events:
-            # 强化记忆
-            re_intensity = self.config.get("reinforcement_intensity", 1.0)
-            if re_intensity > 0:
-                event_ids = [ev['event_id'] for ev in selected_events]
-                self.db.reinforce_memory(event_ids)
-
-        # 6. 聚类
-        clusters = self._cluster_events_by_context(selected_events)
-
-        # 7. 格式化输出
+        # 6. 格式化输出 (基于主题的分组展示)
         resp = f"🔍 回想起了相关记忆：\n\n"
         
-        # 提取相关背景知识
-        node_names = set()
-        for ev in selected_events:
-            with self.db._get_conn() as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT t.name FROM tags t
-                    JOIN event_tags et ON t.id = et.tag_id
-                    WHERE et.event_id = ?
-                """, (ev['event_id'],))
-                tags = [row['name'] for row in cursor.fetchall()]
-                node_names.update(tags)
+        # 组织数据结构：{ theme_id: { "theme": theme_data, "events": [event_data] } }
+        # 使用 "none" 作为无主题事件的 key
+        groups = {}
+        group_order = [] # 保持首次出现的顺序
         
-        nodes = self.db.get_nodes_by_names(list(node_names))
-        if nodes:
-            resp += "💡 相关背景知识：\n"
-            for node in nodes:
-                last_updated_date = node['last_updated'].split(' ')[0] if node['last_updated'] else "未知"
-                desc = node['description']
-                resp += f"  - {node['name']} ({node['type']}) [最后更新: {last_updated_date}]: {desc}\n"
-            resp += "\n"
+        for item in selected_items:
+            if item['type'] == "theme":
+                t = item['data']
+                tid = t['theme_id']
+                if tid not in groups:
+                    groups[tid] = {"theme": t, "events": []}
+                    group_order.append(tid)
+                else:
+                    groups[tid]["theme"] = t
+            else:
+                ev = item['data']
+                theme_info = self.db.get_theme_by_event_id(ev['event_id'])
+                if theme_info:
+                    tid = theme_info['theme_id']
+                    if tid not in groups:
+                        groups[tid] = {"theme": theme_info, "events": [ev]}
+                        group_order.append(tid)
+                    else:
+                        groups[tid]["events"].append(ev)
+                else:
+                    if "none" not in groups:
+                        groups["none"] = {"theme": None, "events": [ev]}
+                        group_order.append("none")
+                    else:
+                        groups["none"]["events"].append(ev)
 
-        # 使用叙述桥梁
-        resp += self._generate_narrative_bridge(clusters)
-        
+        # 按顺序渲染分组
+        for i, tid in enumerate(group_order):
+            group = groups[tid]
+            
+            # 1. 先渲染事件部分 (具体往事)
+            for ev in group["events"]:
+                # 强化记忆
+                self.db.reinforce_memory([ev['event_id']])
+                resp += f"📜 **【具体往事】** ({ev['date']})\n"
+                resp += f"   - {ev['narrative']} [ID: {ev['event_id']}]\n"
+            
+            # 2. 再渲染主题部分 (宏观感悟)
+            if group["theme"]:
+                t = group["theme"]
+                # 如果有事件，加一个小标题提示这是这些事件的总结
+                prefix = "💡 以上事件所属的主题感悟：" if group["events"] else ""
+                resp += f"📂 **【主题记忆】{t['theme_id']}** {prefix}\n"
+                resp += f"   💭 核心感悟: {t['summary']}\n"
+            
+            # 分隔符 (如果不是最后一组)
+            if i < len(group_order) - 1:
+                resp += "\n" + "—" * 20 + "\n\n"
+
         if self.config.get("encourage_deep_recall", False):
-            resp += "\n（注：若想进一步回忆某个事件的细节 or 感想，可以使用 `recall_event_reflection_tool` 并传入对应的 事件ID来深度回想；如果觉得回忆还不够充分，可以使用 `recall_memory_tool` 对刚想起的片段进行联想）"
+            resp += "\n（注：若想进一步回忆某个事件的细节，可以使用 `deep_recall_tool` 传入事件ID）"
+            
         return resp
+
+    def _calculate_theme_score(self, theme, theme_events, vector_relevance, now_date) -> float:
+        """计算主题记忆的综合得分"""
+        if not theme_events:
+            return (vector_relevance / 100.0) ** 4 * 5.0 # 兜底
+            
+        # 1. 计算平均重要性和情感强度
+        avg_importance = sum(e.get('importance', 5) for e in theme_events) / len(theme_events)
+        avg_intensity = sum(e.get('emotional_intensity', 5) for e in theme_events) / len(theme_events)
+        
+        # 2. 计算代表性日期权重 (取第 0.75 新的事件时间)
+        try:
+            sorted_dates = sorted([e['date'] for e in theme_events])
+            n = len(sorted_dates)
+            # 取第 0.75 位置的日期作为代表（介于中位数和最新值之间）
+            target_idx = int(0.75 * (n - 1))
+            representative_date_str = sorted_dates[target_idx]
+            representative_date = datetime.strptime(representative_date_str, "%Y-%m-%d").date()
+            days_diff = (now_date - representative_date).days
+            date_weight = 1.0 / (1 + math.log1p(days_diff / 30.0))
+        except:
+            date_weight = 0.5
+            
+        # 3. 获取配置权重
+        w_time = self.config.get("weight_time", 1.0)
+        w_importance = self.config.get("weight_importance", 1.0)
+        w_intensity = self.config.get("weight_emotional_intensity", 1.0)
+        
+        relevance_score = (vector_relevance / 100.0) ** 4
+        
+        # 4. 综合公式
+        # 这里的 0.8 是调节因子，确保主题不会因为聚合效应而过度压制单个极其重要的孤立事件
+        score = (avg_importance ** w_importance) * \
+                (avg_intensity ** w_intensity) * \
+                (date_weight ** w_time) * \
+                relevance_score * 0.8
+                
+        return score
+
+    def _calculate_single_event_score(self, ev, vector_relevance, query_terms, now_date) -> float:
+        """计算单个事件的综合记忆得分"""
+        try:
+            ev_date = datetime.strptime(ev['date'], "%Y-%m-%d").date()
+            days_diff = (now_date - ev_date).days
+            date_weight = 1.0 / (1 + math.log1p(days_diff / 30.0))
+        except:
+            date_weight = 0.1
+        
+        importance = ev.get('importance', 1)
+        intensity = ev.get('emotional_intensity', 1)
+        relevance_score = (vector_relevance / 100.0) ** 4
+        
+        # 关键词加成
+        keyword_score = 0.0
+        narrative = ev.get('narrative', '')
+        for term in query_terms:
+            if term in narrative:
+                keyword_score += 1.0
+        keyword_bonus = 1.0 + (keyword_score * 0.5)
+        
+        # 强化计数加成
+        re_intensity = self.config.get("reinforcement_intensity", 1.0)
+        reinforcement_boost = ev.get('reinforcement_count', 0) * 0.1 * re_intensity
+        
+        # 综合公式 (参考 _rank_events)
+        w_importance = self.config.get("weight_importance", 1.0)
+        w_intensity = self.config.get("weight_emotional_intensity", 1.0)
+        
+        score = (importance ** w_importance) * \
+                (intensity ** w_intensity) * \
+                relevance_score * \
+                date_weight * \
+                keyword_bonus + \
+                reinforcement_boost
+        return score
 
     def _generate_narrative_bridge(self, clusters: List[List[dict]]) -> str:
         """为聚类后的记忆片段生成叙述性桥梁"""
@@ -963,7 +1140,11 @@ class LocalReminiscencePlugin(Star):
                 narrative += f"（发生在 {dates[0]}）\n"
             
             for ev in cluster:
-                narrative += f"  - {ev['narrative']} [ID: {ev['event_id']}]\n"
+                theme_str = ""
+                if ev.get('theme_info'):
+                    t = ev['theme_info']
+                    theme_str = f" [所属主题: {t['theme_id']} - {t['summary'][:50]}...]"
+                narrative += f"  - {ev['narrative']} [ID: {ev['event_id']}]{theme_str}\n"
             narrative += "---\n"
         return narrative
 
@@ -1251,6 +1432,28 @@ class LocalReminiscencePlugin(Star):
         if current_chunk:
             conversation_chunks.append("".join(current_chunk))
 
+        # 自动发现并注入额外的上下文文件 (*_context_*.txt)
+        extra_contexts = []
+        for context_file in self.dialog_folder.glob(f"{date_str}_context_*.txt"):
+            try:
+                with open(context_file, 'r', encoding='utf-8') as f:
+                    content = f.read().strip()
+                    if content:
+                        # 提取 source_name，例如 2024-01-01_context_Health.txt -> Health
+                        source_name = context_file.stem.split("_context_")[-1]
+                        extra_contexts.append(f"\n=== 外部上下文 ({source_name}) ===\n{content}\n")
+            except Exception as e:
+                logger.error(f"[APLR] 读取外部上下文文件 {context_file} 失败: {e}")
+        
+        if extra_contexts:
+            found_any = True
+            context_str = "".join(extra_contexts)
+            if conversation_chunks:
+                # 注入到第一段总结背景中
+                conversation_chunks[0] = context_str + conversation_chunks[0]
+            else:
+                conversation_chunks.append(context_str)
+
         # 在发送给总结器之前，尝试注入 thoughts 插件的中期记忆
         if conversation_chunks:
             thoughts_data_path = Path.cwd() / "data" / "plugin_data" / "astrbot_plugin_thoughts" / "interim_memory.json"
@@ -1301,17 +1504,20 @@ class LocalReminiscencePlugin(Star):
                 if persona and persona.get('prompt'):
                     base_system_prompt = (persona['prompt'] + "\n" + base_system_prompt) if base_system_prompt else (persona['prompt'] + "\n")
                     logger.debug(f"[APLR] 已成功注入 Astrbot 自带的人格设定 (Persona: {persona.get('name', 'Unknown')})")
-                    logger.debug(f"base sys prompt: {base_system_prompt}")
+                    #logger.debug(f"base sys prompt: {base_system_prompt}")
             except Exception as pe:
                 logger.warning(f"[APLR] 尝试获取 Astrbot 人格设定失败: {pe}")
 
             # 4. 初始化总结器
+            prompts_config = self.config.get("prompts", {})
             summarizer = DailySummarizer(
                 llm_generate_func=llm_generate_func,
                 ai_name=self.ai_name,
                 base_system_prompt=base_system_prompt,
                 base_user_prompt=base_user_prompt,
-                search_events_func=self._search_events_for_summary
+                search_events_func=self._search_events_for_summary,
+                prompt_event_summary=prompts_config.get("event_summary", ""),
+                prompt_memory_node=prompts_config.get("memory_node", "")
             )
 
             # 获取现有节点背景 (总结时放宽上限，允许描述匹配)
@@ -1322,13 +1528,36 @@ class LocalReminiscencePlugin(Star):
                 existing_nodes_context = "\n".join([f"- {n['name']}: {n['description']}" for n in nodes])
 
             # 5. 异步调用总结生成
-            enable_phase2 = self.config.get("enable_cross_day_relations", False)
             summary = await summarizer.generate_summary(
                 conversation_chunks, 
                 date_str, 
-                existing_nodes_context=existing_nodes_context,
-                enable_cross_day_relations=enable_phase2
+                existing_nodes_context=existing_nodes_context
             )
+
+            # --- 记忆固化：增量更新 ---
+            try:
+                if summary and summary.events:
+                    logger.info("[APLR] 正在执行增量记忆固化...")
+                    if not self.consolidator:
+                        prompts_config = self.config.get("prompts", {})
+                        self.consolidator = ThematicConsolidator(
+                            db=self.db,
+                            vector_db=self.vector_db,
+                            llm_generate_func=llm_generate_func,
+                            ai_name=self.ai_name,
+                            persona=base_system_prompt,
+                            prompt_theme_summary=prompts_config.get("theme_summary", "")
+                        )
+                    else:
+                        # 更新可能变化的 persona 和 llm 函数
+                        prompts_config = self.config.get("prompts", {})
+                        self.consolidator.llm_generate = llm_generate_func
+                        self.consolidator.persona = base_system_prompt
+                        self.consolidator.prompt_theme_summary = prompts_config.get("theme_summary", "")
+                    
+                    await self.consolidator.incremental_consolidation()
+            except Exception as ce:
+                logger.error(f"[APLR] 增量固化失败: {ce}")
 
         except Exception as e:
             logger.error(f"[APLR] 生成总结过程中发生错误: {e}", exc_info=True)
@@ -1364,6 +1593,92 @@ class LocalReminiscencePlugin(Star):
         except Exception as e:
             logger.exception("存入数据库失败")
             yield event.plain_result(f"[APLR] 虽然想起来了，但没能存进记忆库：{e}")
+
+    @filter.command("memory_consolidation")
+    async def memory_consolidation_command(self, event: AstrMessageEvent):
+        """执行全局记忆固化（大固化），重新对所有记忆进行聚类和总结。用法：/memory_consolidation"""
+        yield event.plain_result("🚀 正在启动全局记忆固化（大固化），这可能需要较长时间，请耐心等待...")
+        
+        try:
+            umo = event.unified_msg_origin
+            provider_id = await self.context.get_current_chat_provider_id(umo=umo)
+            if not provider_id:
+                yield event.plain_result("❌ 暂时连接不到大脑（LLM Provider），请检查配置。")
+                return
+
+            async def llm_generate_func(prompt, system_prompt):
+                return await self.context.llm_generate(
+                    chat_provider_id=provider_id,
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    history=[]
+                )
+
+            base_system_prompt = self.config.get("default_prompt", "")
+            try:
+                persona = await self.context.persona_manager.get_default_persona_v3(umo=umo)
+                if persona and persona.get('prompt'):
+                    base_system_prompt = (persona['prompt'] + "\n" + base_system_prompt) if base_system_prompt else (persona['prompt'] + "\n")
+            except:
+                pass
+
+            if not self.consolidator:
+                prompts_config = self.config.get("prompts", {})
+                self.consolidator = ThematicConsolidator(
+                    db=self.db,
+                    vector_db=self.vector_db,
+                    llm_generate_func=llm_generate_func,
+                    ai_name=self.ai_name,
+                    persona=base_system_prompt,
+                    prompt_theme_summary=prompts_config.get("theme_summary", "")
+                )
+            else:
+                prompts_config = self.config.get("prompts", {})
+                self.consolidator.llm_generate = llm_generate_func
+                self.consolidator.persona = base_system_prompt
+                self.consolidator.prompt_theme_summary = prompts_config.get("theme_summary", "")
+
+            await self.consolidator.big_consolidation()
+            yield event.plain_result("✅ 全局记忆固化完成！所有记忆已重新聚类并生成总结。")
+        except Exception as e:
+            logger.error(f"大固化失败: {e}", exc_info=True)
+            yield event.plain_result(f"❌ 大固化失败: {e}")
+
+    @filter.command("recall_theme_command")
+    async def recall_theme_command(self, event: AstrMessageEvent):
+        """查看已固化的主题记忆。用法：/recall_theme_command [主题ID(可选)]"""
+        args = event.message_str.strip().split()
+        if len(args) > 1:
+            theme_id = args[1]
+            events = self.db.get_events_by_theme(theme_id)
+            if not events:
+                yield event.plain_result(f"未找到主题 {theme_id}")
+                return
+            
+            # 获取主题总结
+            themes = self.db.get_all_thematic_memories()
+            summary = next((t['summary'] for t in themes if t['theme_id'] == theme_id), "暂无总结")
+            
+            resp = f"📂 **主题: {theme_id}**\n"
+            resp += f"💭 **我的感悟:**\n{summary}\n\n"
+            resp += f"📍 **包含事件 ({len(events)} 条):**\n"
+            for e in events[:20]: # 最多显示20条
+                resp += f"  - [{e['date']}] {e['narrative']}\n"
+            if len(events) > 20:
+                resp += f"  ... 以及其他 {len(events)-20} 条记录。"
+            yield event.plain_result(resp)
+        else:
+            themes = self.db.get_all_thematic_memories()
+            if not themes:
+                yield event.plain_result("目前还没有固化的主题记忆，请先执行 /big_consolidation")
+                return
+            
+            resp = f"📂 **已固化的主题记忆 ({len(themes)} 个):**\n\n"
+            for t in themes:
+                resp += f"🔹 **{t['theme_id']}** ({t['event_count']} 条事件)\n"
+                resp += f"   摘要: {t['summary'][:50]}...\n"
+            resp += "\n使用 `/recall_theme_command [主题ID]` 查看详情。"
+            yield event.plain_result(resp)
 
     async def terminate(self):
         """默认不开启: 当插件被卸载/停用时调用，清理模型缓存和向量数据库。不会删除记忆db文件。"""

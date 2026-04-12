@@ -84,6 +84,37 @@ class MemoryDB:
                     FOREIGN KEY(target_event_id) REFERENCES events(event_id) ON DELETE CASCADE
                 )
             """)
+
+            # 记忆固化相关表
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS thematic_memories (
+                    theme_id TEXT PRIMARY KEY,
+                    summary TEXT,
+                    centroid_vector BLOB,
+                    keywords TEXT,
+                    event_count INTEGER DEFAULT 0,
+                    last_summarized_count INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS event_theme_map (
+                    event_id TEXT,
+                    theme_id TEXT,
+                    PRIMARY KEY (event_id, theme_id),
+                    FOREIGN KEY(event_id) REFERENCES events(event_id) ON DELETE CASCADE,
+                    FOREIGN KEY(theme_id) REFERENCES thematic_memories(theme_id) ON DELETE CASCADE
+                )
+            """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS consolidation_config (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                )
+            """)
             conn.commit()
 
     @contextmanager
@@ -371,3 +402,108 @@ class MemoryDB:
                     WHERE event_id = ?
                 """, (eid,))
             conn.commit()
+
+    def get_consolidation_config(self, key: str) -> str:
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT value FROM consolidation_config WHERE key = ?", (key,))
+            row = cursor.fetchone()
+            return row['value'] if row else None
+
+    def set_consolidation_config(self, key: str, value: str):
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO consolidation_config (key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """, (key, value))
+            conn.commit()
+
+    def save_thematic_memory(self, theme_id: str, summary: str, keywords: str, event_count: int):
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO thematic_memories (theme_id, summary, keywords, event_count, updated_at)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(theme_id) DO UPDATE SET
+                    summary = excluded.summary,
+                    keywords = excluded.keywords,
+                    event_count = excluded.event_count,
+                    updated_at = CURRENT_TIMESTAMP
+            """, (theme_id, summary, keywords, event_count))
+            conn.commit()
+
+    def update_theme_summary(self, theme_id: str, summary: str, last_summarized_count: int):
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE thematic_memories 
+                SET summary = ?, last_summarized_count = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE theme_id = ?
+            """, (summary, last_summarized_count, theme_id))
+            conn.commit()
+
+    def get_thematic_memory(self, theme_id: str) -> dict:
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM thematic_memories WHERE theme_id = ?", (theme_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def get_theme_by_event_id(self, event_id: str) -> dict:
+        """获取事件所属的主题信息"""
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT t.* FROM thematic_memories t
+                JOIN event_theme_map m ON t.theme_id = m.theme_id
+                WHERE m.event_id = ?
+            """, (event_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def get_all_thematic_memories(self) -> List[dict]:
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM thematic_memories")
+            return [dict(row) for row in cursor.fetchall()]
+
+    def map_event_to_theme(self, event_id: str, theme_id: str):
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("INSERT OR REPLACE INTO event_theme_map (event_id, theme_id) VALUES (?, ?)", (event_id, theme_id))
+            # 更新主题的事件计数
+            cursor.execute("SELECT COUNT(*) as count FROM event_theme_map WHERE theme_id = ?", (theme_id,))
+            count = cursor.fetchone()['count']
+            cursor.execute("UPDATE thematic_memories SET event_count = ? WHERE theme_id = ?", (count, theme_id))
+            conn.commit()
+
+    def get_events_by_theme(self, theme_id: str) -> List[dict]:
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT e.* FROM events e
+                JOIN event_theme_map m ON e.event_id = m.event_id
+                WHERE m.theme_id = ?
+                ORDER BY e.date ASC
+            """, (theme_id,))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def clear_thematic_memories(self):
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM thematic_memories")
+            cursor.execute("DELETE FROM event_theme_map")
+            conn.commit()
+
+    def get_unthemed_events(self) -> List[dict]:
+        """获取尚未归入任何主题的事件"""
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT e.* FROM events e
+                LEFT JOIN event_theme_map m ON e.event_id = m.event_id
+                WHERE m.theme_id IS NULL
+                ORDER BY e.date ASC
+            """)
+            return [dict(row) for row in cursor.fetchall()]
