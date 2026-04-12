@@ -1596,8 +1596,8 @@ class LocalReminiscencePlugin(Star):
 
     @filter.command("memory_consolidation")
     async def memory_consolidation_command(self, event: AstrMessageEvent):
-        """执行全局记忆固化（大固化），重新对所有记忆进行聚类和总结。用法：/memory_consolidation"""
-        yield event.plain_result("🚀 正在启动全局记忆固化（大固化），这可能需要较长时间，请耐心等待...")
+        """执行全局记忆主题归类，重新对所有记忆进行聚类和总结。建议记忆数据库有200条以上事件时使用，每数月到数年重新执行一次本函数。用法：/memory_consolidation"""
+        yield event.plain_result("🚀 正在启动全局记忆主题归类（大固化），这可能需要较长时间，请耐心等待...")
         
         try:
             umo = event.unified_msg_origin
