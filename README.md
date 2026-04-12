@@ -178,9 +178,9 @@ To use this plugin, you must perform the first three steps!
       - `0,0,0,2` 额外提高稀有词汇权重，比如使得"A和B一起去看科幻片"更容易匹配到"那天的科幻片超有意思"而不是"A和B一起去看动作片"
 
 8. [可选] **注入外部上下文数据 / External Context Injection**
-    - 如果你有其他系统生成的结构化数据（如健康数据、消费流水、日程等），可以将其按日期导出为纯文本文件，放入插件的 `dialog_folder` 文件夹中。
-    - 文件命名格式：`YYYY-MM-DD_context_来源名.txt`（例如 `2024-04-12_context_Finance.txt`）。
-    - 每日总结时，这些内容会被自动注入到 AI 的回顾背景中，使其能够记住这些非对话类的事实。
+    - 如果你有其他希望能影响AI长期记忆的数据，可以将其按日期生成为纯txt文件，在每日总结前放入插件的 `dialog_folder` 文件夹中。
+    - 文件命名格式：`YYYY-MM-DD_context_名称.txt`（例如 `2024-04-12_context_Finance.txt`）。
+    - 每日总结时，这些内容会被自动注入到 AI 的回顾信息中。
 
 
 ## ⌨️ 指令和工具 / Commands & Tools
