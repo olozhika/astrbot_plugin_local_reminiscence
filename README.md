@@ -194,7 +194,7 @@ To use this plugin, you must perform the first three steps!
 | `/deep_recall_command` | `[ID/日期] [模式]` | 深度回想。支持事件ID(evt_)、主题ID(theme_)或日期(YYYY-MM-DD) |
 | `/recall_recent_events_command` | `[天数] [分数]` | 获取最近一段时间内重要或情感强烈的事件 |
 | `/recall_theme_command` | `[主题ID]` | 查看已固化的主题记忆详情或列表 |
-| `/memory_consolidation` | | 执行全局记忆主题归类（大固化），重新聚类所有记忆 |
+| `/memory_consolidation` | | 执行全局记忆主题归类，重新聚类所有记忆 |
 | `/write_node_command` | `[名] [类] [述]` | 手动写入或更新记忆节点 |
 | `/extract_chat_history_command` | `[YYYY-MM-DD]` | 从数据库提取指定日期的聊天记录（维护用） |
 | `/update_nodes_command` | `[YYYY-MM-DD]` | 从已有事件中重新提取记忆节点（维护用） |
