@@ -1191,8 +1191,8 @@ class LocalReminiscencePlugin(Star):
                     logger.error(f"提取聊天记录失败: {e}")
                 
                 # 提取后再检查一次
-                if not dialog_file.exists():
-                    logger.info(f"[APLR] 没找到 {date_str} ({target_user_id}) 的聊天记录，尝试路径: {dialog_file}")
+                if dialog_file.exists():
+                    logger.info(f"[APLR] 已读取 {date_str} ({target_user_id}) 的聊天记录，尝试路径: {dialog_file}")
                     continue
 
             # 读取聊天记录
