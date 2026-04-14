@@ -20,8 +20,9 @@ import random
 import shutil
 import subprocess
 import sys
+import numpy as np
 
-@register("local_reminiscence", "olozhika", "基于定时总结和向量化的本地记忆插件", "1.3.0")
+@register("local_reminiscence", "olozhika", "基于定时总结和向量化的本地记忆插件", "1.2.2")
 class LocalReminiscencePlugin(Star):
     def __init__(self, context: Context, config: any = None):
         super().__init__(context)
@@ -379,20 +380,27 @@ class LocalReminiscencePlugin(Star):
             return [], []
 
     @filter.command("daily_summary_command")
+    @filter.permission_type(filter.PermissionType.ADMIN)
     async def daily_summary_command(self, event: AstrMessageEvent):
-        """进行每日总结用的工具，回顾并总结今日或指定日期的交流。用法：/daily_summary_command [日期]（可选，默认今天，格式YYYY-MM-DD）。人类专用版！"""
+        """进行每日总结用的工具，回顾并总结今日或指定日期的交流。用法：/daily_summary_command [日期]（可选，默认今天，格式YYYY-MM-DD）。人类专用版！（仅管理员）"""
         async for result in self._daily_summary_logic(event):
             yield result
 
-    @filter.command("extract_chat_history_command")
+    @filter.command_group("APLR_maintenance")
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    async def aplr_maintenance_group(self):
+        """APLR 维护指令组（仅管理员）"""
+        pass
+
+    @aplr_maintenance_group.command("extract_history")
     async def extract_chat_history_command(self, event: AstrMessageEvent):
-        """手动提取指定日期的聊天记录。用法：/extract_chat_history_command [日期]（格式YYYY-MM-DD）。"""
+        """手动提取指定日期的聊天记录。用法：/APLR_maintenance extract_history [日期]（格式YYYY-MM-DD）。"""
         args = event.message_str.strip().split()
-        if len(args) < 2:
-            yield event.plain_result("请提供日期，格式为 YYYY-MM-DD")
+        if len(args) < 3: # /APLR_maintenance extract_history [date]
+            yield event.plain_result("用法：/APLR_maintenance extract_history [YYYY-MM-DD]")
             return
         
-        date_str = args[1]
+        date_str = args[2]
         try:
             datetime.strptime(date_str, "%Y-%m-%d")
         except ValueError:
@@ -418,15 +426,15 @@ class LocalReminiscencePlugin(Star):
             logger.error(f"提取聊天记录失败: {e}")
             yield event.plain_result(f"❌ 提取聊天记录失败: {e}")
 
-    @filter.command("vectorize_events")
+    @aplr_maintenance_group.command("vectorize")
     async def vectorize_events_command(self, event: AstrMessageEvent):
-        """将指定日期的事件向量化并存入向量数据库。用法：/vectorize_events [日期|all]（格式YYYY-MM-DD）。"""
+        """将指定日期的事件向量化并存入向量数据库。用法：/APLR_maintenance vectorize [日期|all]（格式YYYY-MM-DD）。"""
         args = event.message_str.strip().split()
-        if len(args) < 2:
-            yield event.plain_result("请提供日期（YYYY-MM-DD）或输入 'all' 重新向量化全部。")
+        if len(args) < 3:
+            yield event.plain_result("用法：/APLR_maintenance vectorize [YYYY-MM-DD] 或 /APLR_maintenance vectorize all")
             return
         
-        param = args[1].lower()
+        param = args[2].lower()
         
         if param == "all":
             yield event.plain_result("⚠️ 正在清空向量库并重新录入所有事件，这可能需要较长时间，请稍候...")
@@ -463,7 +471,7 @@ class LocalReminiscencePlugin(Star):
                             continue
                         
                         t_event_ids = [te['event_id'] for te in theme_events]
-                        # 从向量库获取这些事件的向量
+                        # 从向量库获取 these 事件的向量
                         res = event_collection.get(ids=t_event_ids, include=['embeddings'])
                         if res['embeddings']:
                             # 计算重心
@@ -505,15 +513,15 @@ class LocalReminiscencePlugin(Star):
             logger.error(f"向量化失败: {e}")
             yield event.plain_result(f"❌ 向量化失败: {e}")
 
-    @filter.command("update_nodes_command")
+    @aplr_maintenance_group.command("update_nodes")
     async def update_nodes_command(self, event: AstrMessageEvent):
-        """根据指定日期的已有事件提取并更新记忆节点。用法：/update_nodes_command [日期]（格式YYYY-MM-DD）。"""
+        """根据指定日期的已有事件提取并更新记忆节点。用法：/APLR_maintenance update_nodes [日期]（格式YYYY-MM-DD）。"""
         args = event.message_str.strip().split()
-        if len(args) < 2:
-            yield event.plain_result("请提供日期，格式为 YYYY-MM-DD")
+        if len(args) < 3:
+            yield event.plain_result("用法：/APLR_maintenance update_nodes [YYYY-MM-DD]")
             return
             
-        date_str = args[1]
+        date_str = args[2]
         try:
             datetime.strptime(date_str, "%Y-%m-%d")
         except ValueError:
@@ -588,12 +596,18 @@ class LocalReminiscencePlugin(Star):
             logger.error(f"提取节点失败: {e}", exc_info=True)
             yield event.plain_result(f"❌ 提取节点失败: {e}")
 
-    @filter.command("recall_memory_command")
+    @filter.command_group("APLR_recall")
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    async def aplr_recall_group(self):
+        """APLR 记忆检索指令组（仅管理员）"""
+        pass
+
+    @aplr_recall_group.command("memory")
     async def recall_memory_command(self, event: AstrMessageEvent):
-        """根据输入文本检索最相关的记忆。用法：/recall_memory_command [文本内容] [条数(可选)]。人类专用版！"""
+        """根据输入文本检索最相关的记忆。用法：/APLR_recall memory [文本内容] [条数(可选)]。人类专用版！（仅管理员）"""
         msg = event.message_str.strip()
-        # 移除可能的斜杠和命令名
-        msg = re.sub(r'^/?recall_memory_command\s*', '', msg).strip()
+        # 移除可能的斜杠和命令名部分
+        content = re.sub(r'^/?APLR_recall\s+memory\s*', '', msg).strip()
         
         if not msg:
             yield event.plain_result("请输入要检索的内容。")
@@ -792,15 +806,15 @@ class LocalReminiscencePlugin(Star):
                 return f"那天 ({date}) 好像没写下什么特别的感悟呢。"
         return f"数据库里没找到关于 {date} 的感悟记录。"
 
-    @filter.command("deep_recall_command")
+    @aplr_recall_group.command("deep")
     async def deep_recall_command(self, event: AstrMessageEvent):
-        """深度回想。用法：/deep_recall_command [ID或日期] [模式(可选)]。"""
+        """深度回想。用法：/APLR_recall deep [ID或日期] [模式(可选)]。"""
         msg = event.message_str.strip()
-        # 移除命令名
-        content = re.sub(r'^/?deep_recall_command\s*', '', msg).strip()
+        # 移除命令名部分
+        content = re.sub(r'^/?APLR_recall\s+deep\s*', '', msg).strip()
         
         if not content:
-            yield event.plain_result("用法：/deep_recall_command [事件ID|主题ID|日期] [模式(可选)]\n模式支持：类人、时间、情绪、随机")
+            yield event.plain_result("用法：/APLR_recall deep [事件ID|主题ID|日期] [模式(可选)]\n模式支持：类人、时间、情绪、随机")
             return
             
         parts = content.split()
@@ -812,25 +826,25 @@ class LocalReminiscencePlugin(Star):
         res = await self.deep_recall_tool(event, target, mode)
         yield event.plain_result(res)
 
-    @filter.command("recall_recent_events_command")
+    @aplr_recall_group.command("recent")
     async def recall_recent_events_command(self, event: AstrMessageEvent, days: str = "7", min_score: str = "20"):
-        """获取最近一段时间内比较重要的、或情感强烈的事件。用法：/recall_recent_events_command [天数] [筛选分数]"""
+        """获取最近一段时间内比较重要的、或情感强烈的事件。用法：/APLR_recall recent [天数] [筛选分数]"""
         try:
             d = int(days)
             s = int(min_score)
         except ValueError:
-            yield event.plain_result("请输入有效的数字（如：/recall_recent_events_command 7 20）。")
+            yield event.plain_result("请输入有效的数字（如：/APLR_recall recent 7 20）。")
             return
             
         res = await self.recall_recent_events_tool(event, d, s)
         yield event.plain_result(res)
 
-    @filter.command("recall_node_command")
+    @aplr_recall_group.command("node")
     async def recall_node_command(self, event: AstrMessageEvent):
-        """搜索某个记忆节点（实体或概念）。用法：/recall_node_command [名称]"""
+        """搜索某个记忆节点（实体或概念）。用法：/APLR_recall node [名称]"""
         msg = event.message_str.strip()
-        # 移除可能的斜杠和命令名
-        query = re.sub(r'^/?recall_node_command\s*', '', msg).strip()
+        # 移除可能的斜杠和命令名部分
+        query = re.sub(r'^/?APLR_recall\s+node\s*', '', msg).strip()
         
         if not query:
             yield event.plain_result("请输入要搜索的节点名称。")
@@ -849,20 +863,20 @@ class LocalReminiscencePlugin(Star):
         else:
             yield event.plain_result(f"暂时没有关于“{query}”的节点记忆呢。")
 
-    @filter.command("write_node_command")
+    @aplr_maintenance_group.command("write_node")
     async def write_node_command(self, event: AstrMessageEvent):
-        """手动写入或更新记忆节点。用法：/write_node_command [节点名] [类型] [描述]"""
+        """手动写入或更新记忆节点。用法：/APLR_maintenance write_node [节点名] [类型] [描述]"""
         msg = event.message_str.strip()
-        # 移除命令名
-        content = re.sub(r'^/?write_node_command\s*', '', msg).strip()
+        # 移除命令名部分
+        content = re.sub(r'^/?APLR_maintenance\s+write_node\s*', '', msg).strip()
         
         if not content:
-            yield event.plain_result("用法：/write_node_command [节点名] [类型] [描述]")
+            yield event.plain_result("用法：/APLR_maintenance write_node [节点名] [类型] [描述]")
             return
             
         parts = content.split(maxsplit=2)
         if len(parts) < 3:
-            yield event.plain_result("参数不足。用法：/write_node_command [节点名] [类型] [描述]\n示例：/write_node_command olozhika 人物 Lanya的好朋友")
+            yield event.plain_result("参数不足。用法：/APLR_maintenance write_node [节点名] [类型] [描述]\n示例：/APLR_maintenance write_node olozhika 人物 Lanya的好朋友")
             return
             
         name, node_type, description = parts
@@ -1373,7 +1387,7 @@ class LocalReminiscencePlugin(Star):
                 
                 # 提取后再检查一次
                 if dialog_file.exists():
-                    logger.info(f"[APLR] 已读取 {date_str} ({target_user_id}) 的聊天记录，尝试路径: {dialog_file}")
+                    logger.info(f"[APLR] 已读取 {date_str} ({target_user_id}) 的聊天记录，路径: {dialog_file}")
                     continue
 
             # 读取聊天记录
@@ -1595,8 +1609,9 @@ class LocalReminiscencePlugin(Star):
             yield event.plain_result(f"[APLR] 虽然想起来了，但没能存进记忆库：{e}")
 
     @filter.command("memory_consolidation")
+    @filter.permission_type(filter.PermissionType.ADMIN)
     async def memory_consolidation_command(self, event: AstrMessageEvent):
-        """执行全局记忆主题归类，重新对所有记忆进行聚类和总结。建议记忆数据库有200条以上事件时使用，每数月到数年重新执行一次本函数。用法：/memory_consolidation"""
+        """执行全局记忆主题归类（仅管理员），重新对所有记忆进行聚类和总结。建议记忆数据库有200条以上事件时使用，每数月到数年重新执行一次本函数。用法：/memory_consolidation"""
         yield event.plain_result("🚀 正在启动全局记忆主题归类（大固化），这可能需要较长时间，请耐心等待...")
         
         try:
@@ -1644,12 +1659,12 @@ class LocalReminiscencePlugin(Star):
             logger.error(f"大固化失败: {e}", exc_info=True)
             yield event.plain_result(f"❌ 大固化失败: {e}")
 
-    @filter.command("recall_theme_command")
+    @aplr_recall_group.command("theme")
     async def recall_theme_command(self, event: AstrMessageEvent):
-        """查看已固化的主题记忆。用法：/recall_theme_command [主题ID(可选)]"""
+        """查看已固化的主题记忆。用法：/APLR_recall theme [主题ID(可选)]"""
         args = event.message_str.strip().split()
-        if len(args) > 1:
-            theme_id = args[1]
+        if len(args) > 2: # /APLR_recall theme [id]
+            theme_id = args[2]
             events = self.db.get_events_by_theme(theme_id)
             if not events:
                 yield event.plain_result(f"未找到主题 {theme_id}")
