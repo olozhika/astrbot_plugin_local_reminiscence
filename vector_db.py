@@ -40,6 +40,7 @@ class VectorDB:
             )
         )
         self.collection = self.client.get_or_create_collection(name="events")
+        self.theme_collection = self.client.get_or_create_collection(name="themes")
         
         self.model = None
         self.model_name = model_name
@@ -209,9 +210,10 @@ class VectorDB:
                 *diagnostic_info,
                 f"原始错误: {exc}",
                 "建议：",
-                "1) 检查本地模型文件夹是否完整（必须包含 config.json）；",
-                "2) 检查网络或镜像地址是否正确；",
-                "3) 手动将模型文件夹放入 APLR_ModelCache 目录下。"
+                "1 检查本地模型文件夹是否完整（必须包含 config.json）；",
+                "2 检查网络或镜像地址是否正确；",
+                "3 假如报错信息全文中出现 .lock 字样，说明网络不稳定丢包或下载中断，建议删除本插件本地向量模型文件夹，并重启本插件；"
+                "3 假如网络实在不稳定，可以手动下载向量模型（详细流程见本插件Github Issue 13）。"
             ]
             raise RuntimeError("\n".join(tips)) from exc
 
@@ -235,8 +237,13 @@ class VectorDB:
     def clear_all(self):
         """清空向量库中的所有数据"""
         try:
-            self.client.delete_collection(name="events")
+            for name in ["events", "themes"]:
+                try:
+                    self.client.delete_collection(name=name)
+                except:
+                    pass
             self.collection = self.client.get_or_create_collection(name="events")
+            self.theme_collection = self.client.get_or_create_collection(name="themes")
             logger.info("[APLR] 向量库已成功清空。")
         except Exception as e:
             logger.error(f"[APLR] 清空向量库失败: {e}")
@@ -268,6 +275,74 @@ class VectorDB:
             embeddings=embeddings,
             documents=documents
         )
+
+    def add_themes(self, themes: List[Dict]):
+        """将主题重心存入 ChromaDB"""
+        if not themes:
+            return
+        
+        import numpy as np
+        ids = [t['theme_id'] for t in themes]
+        embeddings = []
+        for t in themes:
+            if isinstance(t['centroid'], bytes):
+                embeddings.append(np.frombuffer(t['centroid'], dtype=np.float32).tolist())
+            else:
+                embeddings.append(t['centroid'])
+        
+        documents = [t.get('summary', '') for t in themes]
+        
+        self.theme_collection.upsert(
+            ids=ids,
+            embeddings=embeddings,
+            documents=documents,
+            metadatas=[{"type": "theme"}] * len(ids)
+        )
+
+    def search_all(self, query: str, top_n_events: int = 10, top_n_themes: int = 5) -> List[Dict]:
+        """同时搜索事件和主题，返回统一排序后的结果"""
+        self._ensure_model()
+        query_embedding = self.model.encode([query], normalize_embeddings=True).tolist()
+        
+        # 1. 搜索事件
+        event_results = self.collection.query(
+            query_embeddings=query_embedding,
+            n_results=top_n_events
+        )
+        
+        # 2. 搜索主题
+        theme_results = self.theme_collection.query(
+            query_embeddings=query_embedding,
+            n_results=top_n_themes
+        )
+        
+        combined = []
+        
+        # 处理事件结果
+        if event_results['ids'] and event_results['distances']:
+            for eid, dist in zip(event_results['ids'][0], event_results['distances'][0]):
+                cosine_sim = 1 - (dist / 2)
+                relevance = max(0, cosine_sim) * 100
+                combined.append({
+                    "id": eid,
+                    "relevance": round(relevance, 1),
+                    "type": "event"
+                })
+                
+        # 处理主题结果
+        if theme_results['ids'] and theme_results['distances']:
+            for tid, dist in zip(theme_results['ids'][0], theme_results['distances'][0]):
+                cosine_sim = 1 - (dist / 2)
+                relevance = max(0, cosine_sim) * 100
+                combined.append({
+                    "id": tid,
+                    "relevance": round(relevance, 1),
+                    "type": "theme"
+                })
+        
+        # 按相关度从高到低排序
+        combined.sort(key=lambda x: x['relevance'], reverse=True)
+        return combined
 
     def search_events(self, query: str, top_n: int = 10) -> List[Dict]:
         """搜索最接近的事件 ID 和相关度分数"""

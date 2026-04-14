@@ -6,13 +6,31 @@
 
 A lightweight local memory plugin for AstrBot that uses local embedding models and local database storage to save and recall chat history. No API keys required, zero embedding costs, token-saving, and complete privacy protection. Automatically records conversations using Cron jobs, and helps AI automatically recall relevant experiences through deep learning semantic search.
 
-### 🔄 小更新说明 / Update Log (v1.2.3)
+### 🔄 更新说明 / Update Log (v1.3.0)
 
-- 紧急修复了`chat_history_extract.py`文件中，导出每日聊天记录时，AI调用工具时若发送带有\u编码的特殊字符（比如表情）可能导致的聊天记录无法导出的bug
+**喜报，本地回忆[APLR]现已支持记忆的主题聚类，再也不用担心回忆一个"xx和我打招呼"连带出100条相关记忆！**
+
+1. **事件记忆主题聚类**：可使用`/memory_consolidation`对已有事件进行主题聚类
+   - 类人记忆的主题归纳：自动把N条不同日期的"olozhika问我想要什么样的记忆系统""olozhika说她在写记忆系统"聚类成一个主题，并请你的AI进行主题概况，变成如"olozhika经常和我讨论记忆系统架构并写代码"
+   - 回忆优化：比如当olozhika再次聊起记忆系统的时候，AI回想起的将不再是100条不同日期的"谈论记忆系统"而是一两条时间近or重要性高or情感强烈的类似事件+"olozhika经常和我讨论记忆系统架构并写代码"
+   - 兼容旧版：假如你暂时不计划使用主题聚类功能，那么每日总结和回忆的流程和效果就和以前一样，不会受影响
+2. **自定义提示词**：将事件总结、记忆节点、主题归类提示词整合进 `prompts` 分组，方便自定义 AI 行为
+3. **支持每日总结环节的外部数据注入**：支持通过在 `dialog_folder` 放入 `YYYY-MM-DD_context_名称.txt` 文件（如 `2026-04-12_context_Health.txt`）来注入任何外部数据到每日总结，实现全方位记忆
+4. **无效JSON自动修复**：增加对 LLM 输出破损 JSON 的启发式修复，能更稳健地处理字符串内部未转义的引号，减少总结失败率
+5. 把提供给AI的`recall_daily_reflection_tool`和`recall_event_reflection_tool`及新增的主题回忆工具合并为`deep_recall_tool`
+6. 优化指令组结构和名称（详见 指令和工具），且将指令默认权限改为限管理员
+
+#### 老用户升级
+对于记忆数据库里已经有200条以上事件的用户，可以考虑执行`/memory_consolidation`实现全局记忆主题归类（建议每隔数月到数年重新执行一次本指令）
 
 
 <details>
 <summary>点击展开更早版本更新说明</summary>
+
+### 🔄 小更新说明 / Update Log (v1.2.3)
+
+- 紧急修复了`chat_history_extract.py`文件中，导出每日聊天记录时，AI调用工具时若发送带有\u编码的特殊字符（比如表情）可能导致的聊天记录无法导出的bug
+
 
 ### 🔄 小更新说明 / Update Log (v1.2.2)
 
@@ -160,21 +178,30 @@ To use this plugin, you must perform the first three steps!
       - `0,0,0,0` 最接近纯粹的向量匹配，相信向量的力量！
       - `0,0,0,2` 额外提高稀有词汇权重，比如使得"A和B一起去看科幻片"更容易匹配到"那天的科幻片超有意思"而不是"A和B一起去看动作片"
 
+8. [可选] **注入外部上下文数据 / External Context Injection**
+    - 如果你有其他希望能影响AI长期记忆的数据，可以将其按日期生成为纯txt文件，在每日总结前放入插件的 `dialog_folder` 文件夹中。
+    - 文件命名格式：`YYYY-MM-DD_context_名称.txt`（例如 `2024-04-12_context_Finance.txt`）。
+    - 每日总结时，这些内容会被自动注入到 AI 的回顾信息中。
+
 
 ## ⌨️ 指令和工具 / Commands & Tools
 
 ### 🛠️ 指令列表 / Commands
 | 指令 | 参数 | 说明 |
 | :--- | :--- | :--- |
-| `/daily_summary_command` | `[YYYY-MM-DD]` | 手动触发指定日期的总结（默认为今天） |
-| `/recall_memory_command` | `[text] [count]` | 根据输入文本手动搜索相关记忆 |
-| `/recall_node_command` | `[name]` | 搜索特定的记忆节点 |
-| `/recall_event_reflection_command` | `[event_id]` | 获取特定事件的深度观察和感想 |
-| `/recall_daily_reflection_command` | `[YYYY-MM-DD]` | 获取特定日期的每日自由心得 |
-| `/write_node_command` | `[名] [类] [述]` | 手动写入或更新记忆节点 |
-| `/extract_chat_history_command` | `[YYYY-MM-DD]` | 从数据库提取指定日期的聊天记录（维护用） |
-| `/update_nodes_command` | `[YYYY-MM-DD]` | 从已有事件中重新提取记忆节点（维护用） |
-| `/vectorize_events` | `[YYYY-MM-DD]`或`[all]` | 将指定日期的事件重新向量化（维护用，比如更换了向量模型后使用） |
+| `/daily_summary_command` | `[YYYY-MM-DD]` | 手动触发指定日期的总结 |
+| `/memory_consolidation` | | 执行全局记忆主题归类（大固化），重新聚类所有记忆 |
+| **APLR_recall** | | **记忆检索指令组** |
+| └ `memory` | `[text] [count]` | 根据输入文本手动搜索相关记忆 |
+| └ `deep` | `[ID/日期] [模式]` | 深度回想。支持事件ID(evt_)、主题ID(theme_)或日期(YYYY-MM-DD) |
+| └ `recent` | `[天数] [分数]` | 获取最近一段时间内重要或情感强烈的事件 |
+| └ `node` | `[name]` | 搜索特定的记忆节点 |
+| └ `theme` | `[主题ID]` | 查看已固化的主题记忆详情或列表 |
+| **APLR_maintenance** | | **维护指令组** |
+| └ `vectorize` | `[YYYY-MM-DD/all]` | 将指定日期的事件重新向量化 |
+| └ `update_nodes` | `[YYYY-MM-DD]` | 从已有事件中重新提取记忆节点 |
+| └ `write_node` | `[名] [类] [述]` | 手动写入或更新记忆节点 |
+| └ `extract_history` | `[YYYY-MM-DD]` | 从数据库提取指定日期的聊天记录 |
 
 ### 🧰 工具列表 / LLM Tools
 | 工具名称 | 参数 | 说明 |
@@ -182,8 +209,8 @@ To use this plugin, you must perform the first three steps!
 | `daily_summary_tool` | `date` | AI 触发指定日期的总结 |
 | `recall_memory_tool` | `query, count` | AI 检索最相关的事件记忆 |
 | `recall_node_tool` | `name` | AI 搜索特定的实体或概念背景 |
-| `recall_event_reflection_tool` | `event_id` | AI 回想特定事件的深度细节和心理活动 |
-| `recall_daily_reflection_tool` | `date` | AI 回想特定日期的整体心境 |
+| `deep_recall_tool` | `target, mode` | AI 深度回想特定事件细节、主题联想或日期心境 |
+| `recall_recent_events_tool` | `days, min_score` | AI 获取近期重要或高情感价值的记忆片段 |
 | `write_node_tool` | `名 类 述` | AI 手动写入或更新记忆节点 |
 ---
 
