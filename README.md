@@ -8,7 +8,7 @@ A lightweight local memory plugin for AstrBot that uses local embedding models a
 
 ### 🔄 更新说明 / Update Log (v1.3.0-v1.3.1)
 
-如果你是北京时间4月14更新到1.3.0，建议现在再更新一遍哦！6h前更新的版本传错main.py文件了，函数名是旧的，不影响其他功能；现在已经更新了
+如果你是北京时间4月14更新到1.3.0，建议现在再更新一遍哦！14号更新的版本传错main.py文件了，函数名是旧的，不影响其他功能；现在已经更新了
 
 此外更新v1.3.0的时候写出一个bug可能导致部分设置下无法导出聊天记录，已经疾速改好——感谢@RAUHODO
 
