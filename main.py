@@ -22,7 +22,7 @@ import subprocess
 import sys
 import numpy as np
 
-@register("local_reminiscence", "olozhika", "基于定时总结和向量化的本地记忆插件", "1.3.1")
+@register("local_reminiscence", "olozhika", "基于定时总结和向量化的本地记忆插件", "1.2.2")
 class LocalReminiscencePlugin(Star):
     def __init__(self, context: Context, config: any = None):
         super().__init__(context)
@@ -135,9 +135,53 @@ class LocalReminiscencePlugin(Star):
         # 延迟初始化固化器，因为需要 LLM 函数
         self.consolidator = None
 
+    def _append_to_realtime_log(self, unified_id: str, role: str, content: str):
+        """将消息追加到实时日志文件"""
+        if not self.config.get("realtime_recording", False):
+            return
+        
+        now = datetime.now()
+        date_str = now.strftime("%Y-%m-%d")
+        timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
+        
+        safe_id = unified_id.replace(":", "_") if unified_id else "unknown"
+        folder = self.dialog_folder
+        folder.mkdir(parents=True, exist_ok=True)
+        dialog_file = folder / f"{date_str}_dialog_{safe_id}.json"
+        
+        data = {"conversations": []}
+        if dialog_file.exists():
+            try:
+                with open(dialog_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+            except Exception as e:
+                logger.error(f"[APLR] 读取实时日志失败: {e}")
+        
+        if not isinstance(data.get("conversations"), list):
+            data["conversations"] = []
+
+        data["conversations"].append({
+            "timestamp": timestamp,
+            "role": role,
+            "content": content
+        })
+        
+        try:
+            with open(dialog_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"[APLR] 写入实时日志失败: {e}")
+
     @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
         """在生成回复前注入历史记忆，帮助 AI 维持长期记忆"""
+        # 记录用户消息（实时记录模式）
+        if self.config.get("realtime_recording", False) and event.unified_id in self.target_user_id_list:
+            nickname = event.get_sender_name() or self.username
+            text = event.get_plain_text()
+            if text:
+                self._append_to_realtime_log(event.unified_id, nickname, text)
+
         try:
             message_str = event.message_str
             #logger.debug(f"[APLR] 收到消息内容 (前100字): {message_str[:100]}...")
@@ -266,7 +310,7 @@ class LocalReminiscencePlugin(Star):
                     logger.debug(f"[APLR] 未找到用户节点: {current_nickname}")
 
             # 获取消息相关的节点
-            msg_nodes, _ = await self._get_nodes_context(message_str, include_description=False)
+            msg_nodes, _ = await self._get_nodes_context(message_str, include_description=False, limit_per_kw=1)
             for node in msg_nodes:
                 if node['name'] not in seen_names:
                     all_nodes.append(node)
@@ -343,7 +387,62 @@ class LocalReminiscencePlugin(Star):
         except Exception as e:
             logger.error(f"[APLR] 注入历史记忆失败: {e}", exc_info=True)
 
-    async def _get_nodes_context(self, text: str, include_description: bool = False, max_nodes: int = 8) -> tuple[list[dict], list[str]]:
+    @filter.on_llm_response()
+    async def on_llm_response(self, event: AstrMessageEvent, resp: any):
+        """记录 AI 的回复（实时模式）"""
+        if not self.config.get("realtime_recording", False):
+            return
+        if not event or event.unified_id not in self.target_user_id_list:
+            return
+            
+        ai_name = self.ai_name
+        
+        # 尝试从回复中提取思考过程 (支持某些带有思考的模型)
+        think_content = ""
+        if hasattr(resp, 'extra') and isinstance(resp.extra, dict):
+            # 不同 provider 的字段名可能不同
+            think_content = resp.extra.get('think', '') or resp.extra.get('reasoning', '')
+            
+        if think_content:
+            self._append_to_realtime_log(event.unified_id, ai_name, f"(思考: {think_content.strip()})")
+            
+        # 记录主干回复
+        if hasattr(resp, 'completion_text') and resp.completion_text:
+            text = resp.completion_text.strip()
+            # 过滤掉 APLR 内部可能产生的空回复或标记
+            if text and not text.startswith("I finished this job"):
+                self._append_to_realtime_log(event.unified_id, ai_name, text)
+
+    @filter.on_llm_tool_respond()
+    async def on_llm_tool_respond(self, event: AstrMessageEvent, tool_id: str, tool_name: str, args: dict, result: any):
+        """记录工具调用活动（实时模式）"""
+        if not self.config.get("realtime_recording", False):
+            return
+        if not event or event.unified_id not in self.target_user_id_list:
+            return
+
+        ai_name = self.ai_name
+        
+        # 记录调用描述
+        try:
+            args_str = json.dumps(args, ensure_ascii=False)
+        except:
+            args_str = str(args)
+            
+        if len(args_str) > 200:
+            args_str = args_str[:200] + "..."
+        call_desc = f"(操作: 调用函数: {tool_name}({args_str}))"
+        self._append_to_realtime_log(event.unified_id, ai_name, call_desc)
+        
+        # 记录结果中的异常情况
+        res_str = str(result)
+        error_re = re.compile(r'error|failed|exception|not found|insufficient|denied', re.IGNORECASE)
+        match = error_re.search(res_str)
+        if match:
+            keyword = match.group(0).strip()
+            self._append_to_realtime_log(event.unified_id, ai_name, f"(操作失败: {keyword})")
+
+    async def _get_nodes_context(self, text: str, include_description: bool = False, max_nodes: int = 8, limit_per_kw: int = 1) -> tuple[list[dict], list[str]]:
         """根据文本提取关键词并获取相关记忆节点对象"""
         try:
             # 提取关键词
@@ -364,7 +463,7 @@ class LocalReminiscencePlugin(Star):
                 if is_common_name:
                     found_nodes = self.db.get_nodes_by_names([kw])
                 else:
-                    found_nodes = self.db.search_nodes(kw, include_description=include_description)
+                    found_nodes = self.db.search_nodes(kw, limit=limit_per_kw, include_description=include_description)
                 
                 for node in found_nodes:
                     if node['name'] not in seen_names:
@@ -850,7 +949,7 @@ class LocalReminiscencePlugin(Star):
             yield event.plain_result("请输入要搜索的节点名称。")
             return
         
-        nodes = self.db.search_nodes(query)
+        nodes = self.db.search_nodes(query, limit=2)
         if nodes:
             resp = f"💡 找到了 {len(nodes)} 个相关的记忆节点：\n\n"
             for node in nodes:
@@ -924,7 +1023,7 @@ class LocalReminiscencePlugin(Star):
         Args:
             name(string): 要搜索的节点名称。
         """
-        nodes = self.db.search_nodes(name)
+        nodes = self.db.search_nodes(name, limit=2)
         if nodes:
             res = f"找到以下关于 {name} 的相关 node 信息：\n"
             for node in nodes:
@@ -1331,23 +1430,30 @@ class LocalReminiscencePlugin(Star):
         if not date_str or not date_str.strip():
             date_str = datetime.now().strftime("%Y-%m-%d")
 
-        # 如果是今天，尝试执行提取逻辑以确保数据最新/存在
-        if date_str == datetime.now().strftime("%Y-%m-%d"):
+        # 检查是否已经存在该日期的实时记录 JSON
+        folder = self.dialog_folder
+        json_pattern = f"{date_str}_dialog_*.json"
+        has_local_json = any(folder.glob(json_pattern))
+
+        # 如果没有本地记录文件，则尝试从核心数据库提取（保底逻辑）
+        if not has_local_json:
             try:
                 # 核心数据库通常位于 data/data_v4.db
                 core_db_path = Path.cwd() / "data" / "data_v4.db"
-                for target_user_id in self.target_user_id_list:
-                    clean_dialogue_with_different_limits(
-                        db_path=core_db_path,
-                        output_dir=self.dialog_folder,
-                        username=self.username,
-                        ai_name=self.ai_name,
-                        platform="AstrBot",
-                        target_date=date_str,
-                        target_user_id=target_user_id
-                    )
+                if core_db_path.exists():
+                    logger.info(f"[APLR] 未找到日期 {date_str} 的记录文件，正在尝试从核心数据库提取...")
+                    for target_user_id in self.target_user_id_list:
+                        clean_dialogue_with_different_limits(
+                            db_path=core_db_path,
+                            output_dir=self.dialog_folder,
+                            username=self.username,
+                            ai_name=self.ai_name,
+                            platform="AstrBot",
+                            target_date=date_str,
+                            target_user_id=target_user_id
+                        )
             except Exception as e:
-                logger.error(f"提取聊天记录失败: {e}")
+                logger.error(f"保底提取聊天记录失败: {e}")
 
         try:
             datetime.strptime(date_str, "%Y-%m-%d")
@@ -1536,7 +1642,7 @@ class LocalReminiscencePlugin(Star):
 
             # 获取现有节点背景 (总结时放宽上限，允许描述匹配)
             full_text = "\n".join(conversation_chunks)
-            nodes, _ = await self._get_nodes_context(full_text, include_description=True, max_nodes=100)
+            nodes, _ = await self._get_nodes_context(full_text, include_description=True, max_nodes=100, limit_per_kw=3)
             existing_nodes_context = ""
             if nodes:
                 existing_nodes_context = "\n".join([f"- {n['name']}: {n['description']}" for n in nodes])

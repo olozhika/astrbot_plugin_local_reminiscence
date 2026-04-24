@@ -5,6 +5,12 @@
     "hint": "存放聊天记录 JSON 文件的文件夹路径。相对于插件数据目录的路径。",
     "default": "APLR_chat_history"
   },
+  "realtime_recording": {
+    "description": "开启实时监听记录",
+    "type": "bool",
+    "hint": "开启后将通过监听 LLM 钩子实时写入聊天记录到 JSON 文件，不再依赖总结时从核心数据库提取。会稍微加大对话时的内存占用。",
+    "default": false
+  },
   "memory_db_path": {
     "description": "记忆数据库路径",
     "type": "string",
