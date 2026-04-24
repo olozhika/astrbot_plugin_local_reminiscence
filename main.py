@@ -208,8 +208,10 @@ class LocalReminiscencePlugin(Star):
         return None
 
     @filter.on_llm_request()
-    async def on_llm_request(self, event: any, req: ProviderRequest = None):
+    async def on_llm_request(self, event: any, *args, **kwargs):
         """在生成回复前注入历史记忆，帮助 AI 维持长期记忆"""
+        # 如果未开启实时记录且不需要注入逻辑，理论上可以跳过大半，但注入逻辑是核心功能，所以只在记录处检查。
+        
         # 记录用户消息（实时记录模式）
         unified_id = self._get_unified_id(event)
         if self.config.get("realtime_recording", False):
@@ -221,6 +223,18 @@ class LocalReminiscencePlugin(Star):
                     self._append_to_realtime_log(unified_id, nickname, text)
             else:
                 logger.debug(f"[APLR] 实时记录跳过: 用户 ID '{unified_id}' 不在监测列表 {self.target_user_id_list} 中")
+        
+        # 提取 req (ProviderRequest)
+        req = kwargs.get('req') or (args[0] if args and isinstance(args[0], ProviderRequest) else None)
+        if not req:
+            # 尝试从 args 中找
+            for arg in args:
+                if isinstance(arg, ProviderRequest):
+                    req = arg
+                    break
+        
+        if not req:
+            return
 
         try:
             actual_event = getattr(event, 'event', event)
@@ -436,7 +450,7 @@ class LocalReminiscencePlugin(Star):
             logger.error(f"[APLR] 注入历史记忆失败: {e}", exc_info=True)
 
     @filter.on_llm_response()
-    async def on_llm_response(self, event: any, resp: any = None, *args, **kwargs):
+    async def on_llm_response(self, event: any, *args, **kwargs):
         """记录 AI 的回复（实时模式）"""
         if not self.config.get("realtime_recording", False):
             return
@@ -448,21 +462,21 @@ class LocalReminiscencePlugin(Star):
         ai_name = self.ai_name
         
         # 优先使用传入的 resp，如果没有则尝试从事件对象中获取（部分版本兼容）
-        actual_resp = resp if resp else getattr(event, 'resp', None)
-        if not actual_resp:
+        resp = kwargs.get('resp') or (args[0] if args else getattr(event, 'resp', None))
+        if not resp:
             return
         
         # 尝试提取思考过程 (支持某些带有思考的模型)
         think_content = ""
-        if hasattr(actual_resp, 'extra') and isinstance(actual_resp.extra, dict):
+        if hasattr(resp, 'extra') and isinstance(resp.extra, dict):
             # 不同 provider 的字段名可能不同
-            think_content = actual_resp.extra.get('think', '') or actual_resp.extra.get('reasoning', '')
+            think_content = resp.extra.get('think', '') or resp.extra.get('reasoning', '')
             
         if think_content:
             self._append_to_realtime_log(unified_id, ai_name, f"(思考: {think_content.strip()})")
             
         # 记录主干回复
-        text = getattr(actual_resp, 'completion_text', '')
+        text = getattr(resp, 'completion_text', '')
         if text:
             text = text.strip()
             # 过滤掉 APLR 内部可能产生的空回复或标记
@@ -470,7 +484,7 @@ class LocalReminiscencePlugin(Star):
                 self._append_to_realtime_log(unified_id, ai_name, text)
 
     @filter.on_llm_tool_respond()
-    async def on_llm_tool_respond(self, event: any, tool_id: str = None, tool_name: str = None, args: dict = None, result: any = None, *extra_args, **extra_kwargs):
+    async def on_llm_tool_respond(self, event: any, *args, **kwargs):
         """记录工具调用活动（实时模式）"""
         if not self.config.get("realtime_recording", False):
             return
@@ -481,24 +495,24 @@ class LocalReminiscencePlugin(Star):
 
         ai_name = self.ai_name
         
-        # 优先使用传参，否则尝试从事件对象获取
-        actual_tool_name = tool_name if tool_name else getattr(event, 'tool_name', 'unknown')
-        actual_args = args if args is not None else getattr(event, 'args', {})
-        actual_result = result if result is not None else getattr(event, 'result', '')
+        # 优先使用单独传参，否则尝试从事件对象或 kwargs 获取
+        tool_name = kwargs.get('tool_name') or (args[1] if len(args) > 1 else getattr(event, 'tool_name', 'unknown'))
+        tool_args = kwargs.get('args') or (args[2] if len(args) > 2 else getattr(event, 'args', {}))
+        result = kwargs.get('result') or (args[3] if len(args) > 3 else getattr(event, 'result', ''))
 
         # 记录调用描述
         try:
-            args_str = json.dumps(actual_args, ensure_ascii=False)
+            args_str = json.dumps(tool_args, ensure_ascii=False)
         except:
-            args_str = str(actual_args)
+            args_str = str(tool_args)
             
         if len(args_str) > 200:
             args_str = args_str[:200] + "..."
-        call_desc = f"(操作: 调用函数: {actual_tool_name}({args_str}))"
+        call_desc = f"(操作: 调用函数: {tool_name}({args_str}))"
         self._append_to_realtime_log(unified_id, ai_name, call_desc)
         
         # 记录结果中的异常情况
-        res_str = str(actual_result)
+        res_str = str(result)
         error_re = re.compile(r"(error|failed|exception|超时|失败|not found|insufficient|denied)", re.IGNORECASE)
         match = error_re.search(res_str)
         if match:
