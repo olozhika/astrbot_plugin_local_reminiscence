@@ -172,22 +172,70 @@ class LocalReminiscencePlugin(Star):
         except Exception as e:
             logger.error(f"[APLR] 写入实时日志失败: {e}")
 
+    def _get_unified_id(self, event: any) -> str:
+        """从各种可能的事件对象中安全获取 unified_id"""
+        # 如果是包装事件 (OnLLMRequestEvent, OnLLMResponseEvent, etc.)
+        actual_event = getattr(event, 'event', event)
+        
+        # 尝试直接获取属性
+        uid = getattr(actual_event, 'unified_id', None)
+        if uid:
+            return uid
+            
+        # 尝试从消息源获取
+        uid = getattr(actual_event, 'unified_msg_origin', None)
+        if uid:
+            return uid
+            
+        # 尝试调用方法
+        if hasattr(actual_event, 'get_unified_id'):
+            try:
+                return actual_event.get_unified_id()
+            except:
+                pass
+
+        # 尝试从 message_obj 构造 (AstrBot v4 常见结构)
+        try:
+            msg_obj = getattr(actual_event, 'message_obj', None)
+            if msg_obj:
+                platform = getattr(msg_obj, 'platform', '')
+                sender = getattr(msg_obj, 'sender', None)
+                if sender and hasattr(sender, 'user_id'):
+                    return f"{platform}:{sender.user_id}"
+        except:
+            pass
+
+        return None
+
     @filter.on_llm_request()
-    async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
+    async def on_llm_request(self, event: any, req: ProviderRequest = None):
         """在生成回复前注入历史记忆，帮助 AI 维持长期记忆"""
         # 记录用户消息（实时记录模式）
-        if self.config.get("realtime_recording", False) and event.unified_id in self.target_user_id_list:
-            nickname = event.get_sender_name() or self.username
-            text = event.get_plain_text()
-            if text:
-                self._append_to_realtime_log(event.unified_id, nickname, text)
+        unified_id = self._get_unified_id(event)
+        if self.config.get("realtime_recording", False):
+            if unified_id in self.target_user_id_list:
+                actual_event = getattr(event, 'event', event)
+                nickname = (actual_event.get_sender_name() if hasattr(actual_event, 'get_sender_name') else None) or self.username
+                text = actual_event.get_plain_text() if hasattr(actual_event, 'get_plain_text') else getattr(actual_event, 'message_str', '')
+                if text:
+                    self._append_to_realtime_log(unified_id, nickname, text)
+            else:
+                logger.debug(f"[APLR] 实时记录跳过: 用户 ID '{unified_id}' 不在监测列表 {self.target_user_id_list} 中")
 
         try:
-            message_str = event.message_str
-            #logger.debug(f"[APLR] 收到消息内容 (前100字): {message_str[:100]}...")
+            actual_event = getattr(event, 'event', event)
+            message_str = getattr(actual_event, 'message_str', '')
+            if not message_str:
+                return
             
             # 1. 检测是否为新对话开启
-            uid = event.unified_msg_origin
+            uid = getattr(actual_event, 'unified_msg_origin', None)
+            if not uid:
+                uid = unified_id
+            
+            if not uid:
+                return # 无法识别会话来源，跳过注入
+                
             conv_mgr = self.context.conversation_manager
             curr_cid = await conv_mgr.get_curr_conversation_id(uid)
             
@@ -388,59 +436,74 @@ class LocalReminiscencePlugin(Star):
             logger.error(f"[APLR] 注入历史记忆失败: {e}", exc_info=True)
 
     @filter.on_llm_response()
-    async def on_llm_response(self, event: AstrMessageEvent, resp: any):
+    async def on_llm_response(self, event: any, resp: any = None, *args, **kwargs):
         """记录 AI 的回复（实时模式）"""
         if not self.config.get("realtime_recording", False):
             return
-        if not event or event.unified_id not in self.target_user_id_list:
+        
+        unified_id = self._get_unified_id(event)
+        if not event or unified_id not in self.target_user_id_list:
             return
             
         ai_name = self.ai_name
         
-        # 尝试从回复中提取思考过程 (支持某些带有思考的模型)
+        # 优先使用传入的 resp，如果没有则尝试从事件对象中获取（部分版本兼容）
+        actual_resp = resp if resp else getattr(event, 'resp', None)
+        if not actual_resp:
+            return
+        
+        # 尝试提取思考过程 (支持某些带有思考的模型)
         think_content = ""
-        if hasattr(resp, 'extra') and isinstance(resp.extra, dict):
+        if hasattr(actual_resp, 'extra') and isinstance(actual_resp.extra, dict):
             # 不同 provider 的字段名可能不同
-            think_content = resp.extra.get('think', '') or resp.extra.get('reasoning', '')
+            think_content = actual_resp.extra.get('think', '') or actual_resp.extra.get('reasoning', '')
             
         if think_content:
-            self._append_to_realtime_log(event.unified_id, ai_name, f"(思考: {think_content.strip()})")
+            self._append_to_realtime_log(unified_id, ai_name, f"(思考: {think_content.strip()})")
             
         # 记录主干回复
-        if hasattr(resp, 'completion_text') and resp.completion_text:
-            text = resp.completion_text.strip()
+        text = getattr(actual_resp, 'completion_text', '')
+        if text:
+            text = text.strip()
             # 过滤掉 APLR 内部可能产生的空回复或标记
             if text and not text.startswith("I finished this job"):
-                self._append_to_realtime_log(event.unified_id, ai_name, text)
+                self._append_to_realtime_log(unified_id, ai_name, text)
 
     @filter.on_llm_tool_respond()
-    async def on_llm_tool_respond(self, event: AstrMessageEvent, tool_id: str, tool_name: str, args: dict, result: any):
+    async def on_llm_tool_respond(self, event: any, tool_id: str = None, tool_name: str = None, args: dict = None, result: any = None, *extra_args, **extra_kwargs):
         """记录工具调用活动（实时模式）"""
         if not self.config.get("realtime_recording", False):
             return
-        if not event or event.unified_id not in self.target_user_id_list:
+        
+        unified_id = self._get_unified_id(event)
+        if not event or unified_id not in self.target_user_id_list:
             return
 
         ai_name = self.ai_name
         
+        # 优先使用传参，否则尝试从事件对象获取
+        actual_tool_name = tool_name if tool_name else getattr(event, 'tool_name', 'unknown')
+        actual_args = args if args is not None else getattr(event, 'args', {})
+        actual_result = result if result is not None else getattr(event, 'result', '')
+
         # 记录调用描述
         try:
-            args_str = json.dumps(args, ensure_ascii=False)
+            args_str = json.dumps(actual_args, ensure_ascii=False)
         except:
-            args_str = str(args)
+            args_str = str(actual_args)
             
         if len(args_str) > 200:
             args_str = args_str[:200] + "..."
-        call_desc = f"(操作: 调用函数: {tool_name}({args_str}))"
-        self._append_to_realtime_log(event.unified_id, ai_name, call_desc)
+        call_desc = f"(操作: 调用函数: {actual_tool_name}({args_str}))"
+        self._append_to_realtime_log(unified_id, ai_name, call_desc)
         
         # 记录结果中的异常情况
-        res_str = str(result)
-        error_re = re.compile(r'error|failed|exception|not found|insufficient|denied', re.IGNORECASE)
+        res_str = str(actual_result)
+        error_re = re.compile(r"(error|failed|exception|超时|失败|not found|insufficient|denied)", re.IGNORECASE)
         match = error_re.search(res_str)
         if match:
             keyword = match.group(0).strip()
-            self._append_to_realtime_log(event.unified_id, ai_name, f"(操作失败: {keyword})")
+            self._append_to_realtime_log(unified_id, ai_name, f"(操作失败: {keyword})")
 
     async def _get_nodes_context(self, text: str, include_description: bool = False, max_nodes: int = 8, limit_per_kw: int = 1) -> tuple[list[dict], list[str]]:
         """根据文本提取关键词并获取相关记忆节点对象"""
