@@ -496,9 +496,10 @@ class LocalReminiscencePlugin(Star):
         ai_name = self.ai_name
         
         # 优先使用单独传参，否则尝试从事件对象或 kwargs 获取
-        tool_name = kwargs.get('tool_name') or (args[1] if len(args) > 1 else getattr(event, 'tool_name', 'unknown'))
-        tool_args = kwargs.get('args') or (args[2] if len(args) > 2 else getattr(event, 'args', {}))
-        result = kwargs.get('result') or (args[3] if len(args) > 3 else getattr(event, 'result', ''))
+        # args[0] 是 tool_name, args[1] 是 args, args[2] 是 result (如果是通过位置参数传递)
+        tool_name = kwargs.get('tool_name') or (args[0] if len(args) > 0 else getattr(event, 'tool_name', 'unknown'))
+        tool_args = kwargs.get('args') or (args[1] if len(args) > 1 else getattr(event, 'args', {}))
+        result = kwargs.get('result') or (args[2] if len(args) > 2 else getattr(event, 'result', ''))
 
         # 记录调用描述
         try:
@@ -750,7 +751,21 @@ class LocalReminiscencePlugin(Star):
             )
 
             # 获取现有节点背景 (提取节点时也放宽上限，允许描述匹配)
-            nodes_objs, _ = await self._get_nodes_context("\n".join([e['narrative'] for e in events]), include_description=True, max_nodes=100)
+            nodes_objs, _ = await self._get_nodes_context("\n".join([e['narrative'] for e in events]), include_description=True, max_nodes=100, limit_per_kw=3)
+            
+            # 特别确保 ai_name 和 username 也在上下文中（如果存在）
+            important_names = []
+            if self.ai_name: important_names.append(self.ai_name)
+            if self.username: important_names.append(self.username)
+            
+            if important_names:
+                special_nodes = self.db.get_nodes_by_names(important_names)
+                seen_names = {n['name'] for n in nodes_objs}
+                for sn in special_nodes:
+                    if sn['name'] not in seen_names:
+                        nodes_objs.append(sn)
+                        seen_names.add(sn['name'])
+
             existing_nodes_context = ""
             if nodes_objs:
                 existing_nodes_context = "\n".join([f"- {n['name']}: {n['description']}" for n in nodes_objs])
@@ -1720,6 +1735,19 @@ class LocalReminiscencePlugin(Star):
             # 获取现有节点背景 (总结时放宽上限，允许描述匹配)
             full_text = "\n".join(conversation_chunks)
             nodes, _ = await self._get_nodes_context(full_text, include_description=True, max_nodes=100, limit_per_kw=3)
+            
+            # 特别确保 ai_name 也在上下文中（如果存在）
+            important_names = []
+            if self.ai_name: important_names.append(self.ai_name)
+            
+            if important_names:
+                special_nodes = self.db.get_nodes_by_names(important_names)
+                seen_names = {n['name'] for n in nodes}
+                for sn in special_nodes:
+                    if sn['name'] not in seen_names:
+                        nodes.append(sn)
+                        seen_names.add(sn['name'])
+
             existing_nodes_context = ""
             if nodes:
                 existing_nodes_context = "\n".join([f"- {n['name']}: {n['description']}" for n in nodes])
