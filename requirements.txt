@@ -1,3 +1,5 @@
+scikit-learn
+
 # 数据模型校验（必需）
 pydantic
 
