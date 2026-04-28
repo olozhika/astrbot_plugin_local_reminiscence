@@ -207,6 +207,33 @@ class LocalReminiscencePlugin(Star):
 
         return None
 
+    def _get_sender_nickname(self, event: any) -> str:
+        """多重回退获取发送者昵称"""
+        actual_event = getattr(event, 'event', event)
+        
+        # 1. 尝试 get_sender_name()
+        if hasattr(actual_event, 'get_sender_name'):
+            try:
+                name = actual_event.get_sender_name()
+                if name: return name
+            except:
+                pass
+        
+        # 2. 尝试从 message_obj 获取
+        try:
+            msg_obj = getattr(actual_event, 'message_obj', None)
+            if msg_obj and hasattr(msg_obj, 'sender'):
+                sender = msg_obj.sender
+                # 尝试常见字段
+                for attr in ['nickname', 'name', 'card', 'user_id']:
+                    val = getattr(sender, attr, None)
+                    if val: return str(val)
+        except:
+            pass
+            
+        # 3. 实在没有就用配置里的
+        return self.username or "User"
+
     @filter.on_llm_request()
     async def on_llm_request(self, event: any, *args, **kwargs):
         """在生成回复前注入历史记忆，帮助 AI 维持长期记忆"""
@@ -217,7 +244,7 @@ class LocalReminiscencePlugin(Star):
         if self.config.get("realtime_recording", False):
             if unified_id in self.target_user_id_list:
                 actual_event = getattr(event, 'event', event)
-                nickname = (actual_event.get_sender_name() if hasattr(actual_event, 'get_sender_name') else None) or self.username
+                nickname = self._get_sender_nickname(event)
                 text = actual_event.get_plain_text() if hasattr(actual_event, 'get_plain_text') else getattr(actual_event, 'message_str', '')
                 if text:
                     self._append_to_realtime_log(unified_id, nickname, text)
