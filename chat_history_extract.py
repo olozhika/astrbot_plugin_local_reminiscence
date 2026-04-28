@@ -150,10 +150,18 @@ def clean_dialogue_with_different_limits(
 
             def process_content_item(item):
                 nonlocal timestamp, turn_nickname
+                is_think = False
                 if isinstance(item, str):
                     text = item
-                elif isinstance(item, dict) and item.get("type") in ["text", "plain"]:
-                    text = item.get("text", "")
+                elif isinstance(item, dict):
+                    item_type = item.get("type")
+                    if item_type in ["text", "plain"]:
+                        text = item.get("text", "")
+                    elif item_type == "think":
+                        text = item.get("think", "")
+                        is_think = True
+                    else:
+                        return
                 else:
                     return
                 ts = extract_timestamp(text)
@@ -163,10 +171,15 @@ def clean_dialogue_with_different_limits(
                 if nick:
                     turn_nickname = nick
                 if not is_metadata_block(text):
-                    marker = "I finished this job, here is the result:"
-                    if marker in text:
-                        text = text.split(marker, 1)[1]
-                    text_messages.append(text.strip())
+                    if is_think:
+                        if text.strip():
+                            text_messages.append(f"(思考: {text.strip()})")
+                    else:
+                        marker = "I finished this job, here is the result:"
+                        if marker in text:
+                            text = text.split(marker, 1)[1]
+                        if text.strip():
+                            text_messages.append(text.strip())
 
             def process_tool_calls_for_actions(calls):
                 if not isinstance(calls, list):
@@ -183,7 +196,7 @@ def clean_dialogue_with_different_limits(
                         args_preview = args_str[:200] + "..."
                     else:
                         args_preview = args_str
-                    action_desc = f"[行动] 调用函数: {name}({args_preview})"
+                    action_desc = f"(操作: 调用函数: {name}({args_preview}))"
                     actions.append((call.get("id"), action_desc))
                 return actions
 
@@ -240,7 +253,7 @@ def clean_dialogue_with_different_limits(
                     match = error_re.search(tool_content)
                     if match:
                         keyword = match.group(0).strip()
-                        error_msg = f"[行动失败] {keyword}"
+                        error_msg = f"(操作失败: {keyword})"
                         daily_txt[date_key].append(f"[{timestamp}] {ai_name}: {error_msg}")
                         daily_json[date_key].append({
                             "timestamp": timestamp,
