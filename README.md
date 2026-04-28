@@ -6,6 +6,17 @@
 
 A lightweight local memory plugin for AstrBot that uses local embedding models and local database storage to save and recall chat history. No API keys required, zero embedding costs, token-saving, and complete privacy protection. Automatically records conversations using Cron jobs, and helps AI automatically recall relevant experiences through deep learning semantic search.
 
+### 🔄 小更新说明 (v1.2.3)
+
+- 每日总结从核心数据库导出聊天记录时会连带AI的思考信息（如果存在）一起导出
+- 在每日总结环节唤起更多记忆节点，增强LLM整理记忆节点的能力
+- 每日总结环节更新记忆节点时现会确保为AI提供自己名字的节点（如果存在）作为参考
+- 支持通过实时监听记录聊天记录，在设置中开启“开启实时监听记录”选项后将优先通过监听而非后期读取核心数据库完成聊天记录总结
+
+
+<details>
+<summary>点击展开更早版本更新说明</summary>
+
 ### 🔄 更新说明 / Update Log (v1.3.0-v1.3.1)
 
 如果你是北京时间4月14更新到1.3.0，建议现在再更新一遍哦！14号更新的版本传错main.py文件了，函数名是旧的，不影响其他功能；现在已经更新了
@@ -28,15 +39,12 @@ A lightweight local memory plugin for AstrBot that uses local embedding models a
 对于记忆数据库里已经有200条以上事件的用户，可以考虑执行`/memory_consolidation`实现全局记忆主题归类（建议每隔数月到数年重新执行一次本指令）
 
 
-<details>
-<summary>点击展开更早版本更新说明</summary>
-
-### 🔄 小更新说明 / Update Log (v1.2.3)
+### 🔄 小更新说明 (v1.2.3)
 
 - 紧急修复了`chat_history_extract.py`文件中，导出每日聊天记录时，AI调用工具时若发送带有\u编码的特殊字符（比如表情）可能导致的聊天记录无法导出的bug
 
 
-### 🔄 小更新说明 / Update Log (v1.2.2)
+### 🔄 小更新说明 (v1.2.2)
 
 - 优化聊天记录导出方法，增强tool调用的识别与记录
 - 优化向量化方式：现在对于事件主语和发言人有更强约束
