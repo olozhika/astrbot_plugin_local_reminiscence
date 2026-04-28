@@ -8,7 +8,7 @@
   "realtime_recording": {
     "description": "开启实时监听记录",
     "type": "bool",
-    "hint": "开启后将通过监听 LLM 钩子实时写入聊天记录到 JSON 文件，不再依赖总结时从核心数据库提取。会稍微加大对话时的内存占用。",
+    "hint": "开启后将通过监听 LLM 钩子实时写入聊天记录到 JSON 文件，不再依赖总结时从核心数据库提取。会稍微加大对话时的内存占用。部分平台可能无法正确识别用户名。",
     "default": false
   },
   "memory_db_path": {
