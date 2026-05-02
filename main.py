@@ -820,15 +820,9 @@ class LocalReminiscencePlugin(Star):
             dr_nodes_config = self.config.get("dailyreview_nodes", {})
             include_reflection = dr_nodes_config.get("include_reflection", False)
             
-            # 构建用于检索背景的文本。如果开启了反思，则检索背景时也尽量包含它
-            search_text_parts = []
-            for e in events:
-                part = e.get('narrative', '')
-                if include_reflection and e.get('reflection'):
-                    part += f" {e['reflection']}"
-                search_text_parts.append(part)
-                
-            nodes_objs = await self._get_nodes_for_summary("\n".join(search_text_parts), include_username=True)
+            # 注意：即便开启了 include_reflection，也不在检索背景时使用反思内容，以防干扰关键词匹配
+            search_text = "\n".join([e.get('narrative', '') for e in events])
+            nodes_objs = await self._get_nodes_for_summary(search_text, include_username=False)
             
             existing_nodes_context = ""
             if nodes_objs:
