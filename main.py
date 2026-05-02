@@ -144,7 +144,7 @@ class LocalReminiscencePlugin(Star):
         """向量模型闲置检测循环"""
         while True:
             try:
-                await asyncio.sleep(60) # 每分钟检查一次
+                await asyncio.sleep(600) # 每 10 分钟检查一次
                 if hasattr(self, 'vector_db'):
                     self.vector_db.check_and_unload_model()
             except Exception as e:
@@ -717,8 +717,8 @@ class LocalReminiscencePlugin(Star):
                 
                 # 4. 向量化主题 (现场计算重心)
                 all_themes = self.db.get_all_thematic_memories()
+                themes_to_add = []
                 if all_themes:
-                    themes_to_add = []
                     event_collection = self.vector_db.client.get_collection("events")
                     
                     for t in all_themes:
@@ -731,7 +731,7 @@ class LocalReminiscencePlugin(Star):
                         t_event_ids = [te['event_id'] for te in theme_events]
                         # 从向量库获取 these 事件的向量
                         res = event_collection.get(ids=t_event_ids, include=['embeddings'])
-                        if res['embeddings']:
+                        if res.get('embeddings') and len(res['embeddings']) > 0:
                             # 计算重心
                             embs = np.array(res['embeddings'], dtype=np.float32)
                             centroid = np.mean(embs, axis=0)
