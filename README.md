@@ -6,6 +6,17 @@
 
 A lightweight local memory plugin for AstrBot that uses local embedding models and local database storage to save and recall chat history. No API keys required, zero embedding costs, token-saving, and complete privacy protection. Automatically records conversations using Cron jobs, and helps AI automatically recall relevant experiences through deep learning semantic search.
 
+### 🔄 小更新说明 (v1.3.3)
+
+1. 在设置中增加每日总结-记忆节点环节配置
+  - 可选是否额外为LLM提供它所总结的事件反思（详细心得）
+  - 可以自行设置此环节"每关键词唤起多个节点时"为LLM最多提供的节点数，有效防止LLM注意力分散
+2. 在设置中增加配置，支持向量模型闲置一段时间后自动取消挂载
+3. 修复了使用vectorize指令重新向量化所有事件和主题时，主题记忆向量写入报错的bug
+
+<details>
+<summary>点击展开更早版本更新说明</summary>
+
 ### 🔄 小更新说明 (v1.3.2)
 
 - 每日总结从核心数据库导出聊天记录时会连带AI的思考信息（如果存在）一起导出
@@ -13,9 +24,6 @@ A lightweight local memory plugin for AstrBot that uses local embedding models a
 - 每日总结环节更新记忆节点时现会确保为AI提供自己名字的节点（如果存在）作为参考
 - 支持通过实时监听记录聊天记录，在设置中开启“开启实时监听记录”选项后将优先通过监听而非后期读取核心数据库完成聊天记录总结
 
-
-<details>
-<summary>点击展开更早版本更新说明</summary>
 
 ### 🔄 更新说明 / Update Log (v1.3.0-v1.3.1)
 
