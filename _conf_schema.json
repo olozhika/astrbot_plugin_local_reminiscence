@@ -53,6 +53,12 @@
     "hint": "开启后将强制只读本地模型缓存，彻底避免联网检查（包括 ChromaDB 遥测和 HuggingFace 下载）。请在确认本插件已正常运行过一次且安装的其他插件都不需要连接HuggingFace时再开启。",
     "default": false
   },
+  "model_idle_timeout": {
+    "description": "向量模型自动卸载时长 (分钟)",
+    "type": "int",
+    "hint": "向量模型在闲置多久后自动从内存中释放。-1 表示不自动卸载。建议在内存紧张的环境中设置为 30-60 分钟。",
+    "default": -1
+  },
   "target_user_id_list": {
     "description": "目标会话 ID 列表",
     "type": "list",
