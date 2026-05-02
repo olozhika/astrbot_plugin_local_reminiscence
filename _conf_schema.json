@@ -8,7 +8,7 @@
   "realtime_recording": {
     "description": "开启实时监听记录",
     "type": "bool",
-    "hint": "开启后将通过监听 LLM 钩子实时写入聊天记录到 JSON 文件，不再依赖总结时从核心数据库提取。会稍微加大对话时的内存占用。部分平台可能无法正确识别用户名。",
+    "hint": "开启后将通过监听 LLM 钩子实时写入聊天记录到 JSON 文件，不再依赖总结时从核心数据库提取。会稍微加大对话时的内存占用。",
     "default": false
   },
   "memory_db_path": {
@@ -148,6 +148,25 @@
     "type": "float",
     "hint": "控制匹配到罕见词（TF-IDF权重高）时的加成强度。默认 1.0。",
     "default": 1.0
+  },
+  "dailyreview_nodes": {
+    "description": "每日总结 - 记忆节点配置",
+    "type": "object",
+    "hint": "配置每日总结过程中，如何检索和更新长期记忆节点。",
+    "items": {
+      "include_reflection": {
+        "description": "注入事件反思",
+        "type": "bool",
+        "hint": "开启后，在总结记忆节点时会额外提供事件的reflection（反思）。有助于 AI 记录深层见解和情感波动。",
+        "default": false
+      },
+      "max_reference_nodes": {
+        "description": "参考节点上限",
+        "type": "int",
+        "hint": "当单个关键词唤起多个节点时，最终提供给 AI 的参考节点总数上限。默认 20。",
+        "default": 20
+      }
+    }
   },
   "prompts": {
     "description": "提示词自定义配置",
