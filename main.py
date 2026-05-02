@@ -823,6 +823,8 @@ class LocalReminiscencePlugin(Star):
             # 注意：即便开启了 include_reflection，也不在检索背景时使用反思内容，以防干扰关键词匹配
             search_text = "\n".join([e.get('narrative', '') for e in events])
             nodes_objs = await self._get_nodes_for_summary(search_text, include_username=False)
+            if nodes_objs:
+                logger.debug(f"[APLR] 提取节点环节提供的参考节点: {[n['name'] for n in nodes_objs]}")
             
             existing_nodes_context = ""
             if nodes_objs:
@@ -1793,6 +1795,8 @@ class LocalReminiscencePlugin(Star):
             # 获取现有节点背景 (总结时使用优化的检索逻辑)
             full_text = "\n".join(conversation_chunks)
             nodes = await self._get_nodes_for_summary(full_text, include_username=False)
+            if nodes:
+                logger.debug(f"[APLR] 每日总结环节提供的参考节点: {[n['name'] for n in nodes]}")
 
             existing_nodes_context = ""
             if nodes:
