@@ -731,9 +731,10 @@ class LocalReminiscencePlugin(Star):
                         t_event_ids = [te['event_id'] for te in theme_events]
                         # 从向量库获取 these 事件的向量
                         res = event_collection.get(ids=t_event_ids, include=['embeddings'])
-                        if res.get('embeddings') and len(res['embeddings']) > 0:
+                        embeddings = res.get('embeddings')
+                        if embeddings is not None and len(embeddings) > 0:
                             # 计算重心
-                            embs = np.array(res['embeddings'], dtype=np.float32)
+                            embs = np.array(embeddings, dtype=np.float32)
                             centroid = np.mean(embs, axis=0)
                             themes_to_add.append({
                                 "theme_id": theme_id,
