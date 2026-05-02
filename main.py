@@ -1,4 +1,5 @@
 import os
+import asyncio
 import json
 import math
 import re
@@ -129,11 +130,25 @@ class LocalReminiscencePlugin(Star):
             hf_endpoint=self.hf_endpoint,
             trust_remote_code=embedding_trust_remote_code,
             offline_mode=self.offline_mode,
-            ai_name=self.ai_name
+            ai_name=self.ai_name,
+            idle_timeout=self.config.get("model_idle_timeout", -1)
         )
+        
+        # 启动背景检测任务
+        asyncio.create_task(self._model_idle_check_loop())
         
         # 延迟初始化固化器，因为需要 LLM 函数
         self.consolidator = None
+
+    async def _model_idle_check_loop(self):
+        """向量模型闲置检测循环"""
+        while True:
+            try:
+                await asyncio.sleep(60) # 每分钟检查一次
+                if hasattr(self, 'vector_db'):
+                    self.vector_db.check_and_unload_model()
+            except Exception as e:
+                logger.error(f"[APLR] 向量模型闲置检测任务异常: {e}")
 
     def _append_to_realtime_log(self, unified_id: str, role: str, content: str):
         """将消息追加到实时日志文件"""
