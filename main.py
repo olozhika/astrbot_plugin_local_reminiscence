@@ -1,4 +1,5 @@
 import os
+import asyncio
 import json
 import math
 import re
@@ -22,7 +23,7 @@ import subprocess
 import sys
 import numpy as np
 
-@register("local_reminiscence", "olozhika", "基于定时总结和向量化的本地记忆插件", "1.3.2")
+@register("local_reminiscence", "olozhika", "基于定时总结和向量化的本地记忆插件", "1.3.3")
 class LocalReminiscencePlugin(Star):
     def __init__(self, context: Context, config: any = None):
         super().__init__(context)
@@ -129,11 +130,25 @@ class LocalReminiscencePlugin(Star):
             hf_endpoint=self.hf_endpoint,
             trust_remote_code=embedding_trust_remote_code,
             offline_mode=self.offline_mode,
-            ai_name=self.ai_name
+            ai_name=self.ai_name,
+            idle_timeout=self.config.get("model_idle_timeout", -1)
         )
+        
+        # 启动背景检测任务
+        asyncio.create_task(self._model_idle_check_loop())
         
         # 延迟初始化固化器，因为需要 LLM 函数
         self.consolidator = None
+
+    async def _model_idle_check_loop(self):
+        """向量模型闲置检测循环"""
+        while True:
+            try:
+                await asyncio.sleep(600) # 每 10 分钟检查一次
+                if hasattr(self, 'vector_db'):
+                    self.vector_db.check_and_unload_model()
+            except Exception as e:
+                logger.error(f"[APLR] 向量模型闲置检测任务异常: {e}")
 
     def _append_to_realtime_log(self, unified_id: str, role: str, content: str):
         """将消息追加到实时日志文件"""
@@ -583,6 +598,45 @@ class LocalReminiscencePlugin(Star):
             logger.error(f"获取节点背景失败: {e}")
             return [], []
 
+    async def _get_nodes_for_summary(self, text: str, include_username: bool = False) -> list[dict]:
+        """专门为总结/提取环节优化的节点获取逻辑"""
+        
+        # 获取配置
+        dr_nodes_config = self.config.get("dailyreview_nodes", {})
+        max_ref = dr_nodes_config.get("max_reference_nodes", 20)
+        
+        def add_special_nodes(current_nodes):
+            res = list(current_nodes)
+            important_names = []
+            if self.ai_name: important_names.append(self.ai_name)
+            if include_username and self.username: important_names.append(self.username)
+            
+            if important_names:
+                special_nodes = self.db.get_nodes_by_names(important_names)
+                seen_names = {n['name'] for n in res}
+                for sn in special_nodes:
+                    if sn['name'] not in seen_names:
+                        res.append(sn)
+                        seen_names.add(sn['name'])
+            return res
+
+        # 1. 默认检索 1 个 (limit_per_kw=1)
+        nodes1_raw, _ = await self._get_nodes_context(text, include_description=True, max_nodes=100, limit_per_kw=1)
+        nodes1_final = add_special_nodes(nodes1_raw)
+        
+        # 2. 假如去重后记忆节点数目 < 10 个，再试试检索 2 个
+        if len(nodes1_raw) < 10:
+            nodes2_raw, _ = await self._get_nodes_context(text, include_description=True, max_nodes=100, limit_per_kw=2)
+            nodes2_final = add_special_nodes(nodes2_raw)
+            
+            # 3. 最终假如检索数大于 1 (即使用 limit=2)，一定要让最终给的记忆节点数目小于配置上限
+            if len(nodes2_final) < max_ref:
+                return nodes2_final
+            # 否则回退到只检索 1 个的结果
+            return nodes1_final
+        
+        return nodes1_final
+
     @filter.command("daily_summary_command")
     @filter.permission_type(filter.PermissionType.ADMIN)
     async def daily_summary_command(self, event: AstrMessageEvent):
@@ -663,8 +717,8 @@ class LocalReminiscencePlugin(Star):
                 
                 # 4. 向量化主题 (现场计算重心)
                 all_themes = self.db.get_all_thematic_memories()
+                themes_to_add = []
                 if all_themes:
-                    themes_to_add = []
                     event_collection = self.vector_db.client.get_collection("events")
                     
                     for t in all_themes:
@@ -677,9 +731,10 @@ class LocalReminiscencePlugin(Star):
                         t_event_ids = [te['event_id'] for te in theme_events]
                         # 从向量库获取 these 事件的向量
                         res = event_collection.get(ids=t_event_ids, include=['embeddings'])
-                        if res['embeddings']:
+                        embeddings = res.get('embeddings')
+                        if embeddings is not None and len(embeddings) > 0:
                             # 计算重心
-                            embs = np.array(res['embeddings'], dtype=np.float32)
+                            embs = np.array(embeddings, dtype=np.float32)
                             centroid = np.mean(embs, axis=0)
                             themes_to_add.append({
                                 "theme_id": theme_id,
@@ -777,27 +832,21 @@ class LocalReminiscencePlugin(Star):
                 search_events_func=self._search_events_for_summary
             )
 
-            # 获取现有节点背景 (提取节点时也放宽上限，允许描述匹配)
-            nodes_objs, _ = await self._get_nodes_context("\n".join([e['narrative'] for e in events]), include_description=True, max_nodes=100, limit_per_kw=3)
+            # 获取现有节点背景 (提取节点时使用优化的检索逻辑)
+            dr_nodes_config = self.config.get("dailyreview_nodes", {})
+            include_reflection = dr_nodes_config.get("include_reflection", False)
             
-            # 特别确保 ai_name 和 username 也在上下文中（如果存在）
-            important_names = []
-            if self.ai_name: important_names.append(self.ai_name)
-            if self.username: important_names.append(self.username)
+            # 注意：即便开启了 include_reflection，也不在检索背景时使用反思内容，以防干扰关键词匹配
+            search_text = "\n".join([e.get('narrative', '') for e in events])
+            nodes_objs = await self._get_nodes_for_summary(search_text, include_username=False)
+            if nodes_objs:
+                logger.debug(f"[APLR] 提取节点环节提供的参考节点: {[n['name'] for n in nodes_objs]}")
             
-            if important_names:
-                special_nodes = self.db.get_nodes_by_names(important_names)
-                seen_names = {n['name'] for n in nodes_objs}
-                for sn in special_nodes:
-                    if sn['name'] not in seen_names:
-                        nodes_objs.append(sn)
-                        seen_names.add(sn['name'])
-
             existing_nodes_context = ""
             if nodes_objs:
                 existing_nodes_context = "\n".join([f"- {n['name']}: {n['description']}" for n in nodes_objs])
 
-            nodes_result = await summarizer.extract_nodes_from_events(events, date_str, existing_nodes_context=existing_nodes_context)
+            nodes_result = await summarizer.extract_nodes_from_events(events, date_str, existing_nodes_context=existing_nodes_context, include_reflection=include_reflection)
             if nodes_result:
                 nodes, deleted_nodes = nodes_result
                 if nodes:
@@ -1759,31 +1808,23 @@ class LocalReminiscencePlugin(Star):
                 prompt_memory_node=prompts_config.get("memory_node", "")
             )
 
-            # 获取现有节点背景 (总结时放宽上限，允许描述匹配)
+            # 获取现有节点背景 (总结时使用优化的检索逻辑)
             full_text = "\n".join(conversation_chunks)
-            nodes, _ = await self._get_nodes_context(full_text, include_description=True, max_nodes=100, limit_per_kw=3)
-            
-            # 特别确保 ai_name 也在上下文中（如果存在）
-            important_names = []
-            if self.ai_name: important_names.append(self.ai_name)
-            
-            if important_names:
-                special_nodes = self.db.get_nodes_by_names(important_names)
-                seen_names = {n['name'] for n in nodes}
-                for sn in special_nodes:
-                    if sn['name'] not in seen_names:
-                        nodes.append(sn)
-                        seen_names.add(sn['name'])
+            nodes = await self._get_nodes_for_summary(full_text, include_username=False)
+            if nodes:
+                logger.debug(f"[APLR] 每日总结环节提供的参考节点: {[n['name'] for n in nodes]}")
 
             existing_nodes_context = ""
             if nodes:
                 existing_nodes_context = "\n".join([f"- {n['name']}: {n['description']}" for n in nodes])
 
             # 5. 异步调用总结生成
+            dr_nodes_config = self.config.get("dailyreview_nodes", {})
             summary = await summarizer.generate_summary(
                 conversation_chunks, 
                 date_str, 
-                existing_nodes_context=existing_nodes_context
+                existing_nodes_context=existing_nodes_context,
+                include_reflection=dr_nodes_config.get("include_reflection", False)
             )
 
             # --- 记忆固化：增量更新 ---

@@ -53,6 +53,12 @@
     "hint": "开启后将强制只读本地模型缓存，彻底避免联网检查（包括 ChromaDB 遥测和 HuggingFace 下载）。请在确认本插件已正常运行过一次且安装的其他插件都不需要连接HuggingFace时再开启。",
     "default": false
   },
+  "model_idle_timeout": {
+    "description": "向量模型自动卸载时长 (分钟)",
+    "type": "int",
+    "hint": "向量模型在闲置多久后自动从内存中释放。-1 表示不自动卸载。建议在内存紧张的环境中设置为 30-60 分钟。",
+    "default": -1
+  },
   "target_user_id_list": {
     "description": "目标会话 ID 列表",
     "type": "list",
@@ -148,6 +154,25 @@
     "type": "float",
     "hint": "控制匹配到罕见词（TF-IDF权重高）时的加成强度。默认 1.0。",
     "default": 1.0
+  },
+  "dailyreview_nodes": {
+    "description": "每日总结 - 记忆节点配置",
+    "type": "object",
+    "hint": "配置每日总结过程中，如何检索和更新长期记忆节点。",
+    "items": {
+      "include_reflection": {
+        "description": "注入事件反思",
+        "type": "bool",
+        "hint": "开启后，在总结记忆节点时会额外提供事件的reflection（反思）。有助于 AI 记录深层见解和情感波动。",
+        "default": false
+      },
+      "max_reference_nodes": {
+        "description": "参考节点上限",
+        "type": "int",
+        "hint": "当单个关键词唤起多个节点时，最终提供给 AI 的参考节点总数上限。默认 20。",
+        "default": 20
+      }
+    }
   },
   "prompts": {
     "description": "提示词自定义配置",

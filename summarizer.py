@@ -52,12 +52,15 @@ class DailySummarizer:
         
         return s
 
-    async def extract_nodes_from_events(self, events: List[dict], date_str: str, existing_nodes_context: str = "") -> tuple[list, list] | None:
+    async def extract_nodes_from_events(self, events: List[dict], date_str: str, existing_nodes_context: str = "", include_reflection: bool = False) -> tuple[list, list] | None:
         """从已有的事件叙述中提取记忆节点"""
         if not events:
             return [], []
             
-        events_text = "\n---\n".join([f"事件ID: {ev['event_id']}\n叙述: {ev['narrative']}" for ev in events])
+        if include_reflection:
+            events_text = "\n---\n".join([f"事件ID: {ev['event_id']}\n叙述: {ev['narrative']}\n反思: {ev.get('reflection', '无')}" for ev in events])
+        else:
+            events_text = "\n---\n".join([f"事件ID: {ev['event_id']}\n叙述: {ev['narrative']}" for ev in events])
         
         from .models import MemoryNode
         schema_dict = {
@@ -103,7 +106,7 @@ class DailySummarizer:
             logger.error(f"提取节点时发生错误: {e}", exc_info=True)
             return None
 
-    async def generate_summary(self, conversation_chunks: List[str], date_str: str, existing_nodes_context: str = "") -> DailySummary | None:
+    async def generate_summary(self, conversation_chunks: List[str], date_str: str, existing_nodes_context: str = "", include_reflection: bool = False) -> DailySummary | None:
         """两阶段总结法：
         1. 提取今日事件与日感想（支持分段处理）。
         2. 提取/更新记忆节点。
@@ -208,7 +211,7 @@ class DailySummarizer:
             if summary.events:
                 logger.info(f"[APLR] 执行第二阶段总结：提取记忆节点...")
                 events_list = [e if isinstance(e, dict) else e.model_dump() for e in summary.events]
-                nodes_result = await self.extract_nodes_from_events(events_list, date_str, existing_nodes_context=existing_nodes_context)
+                nodes_result = await self.extract_nodes_from_events(events_list, date_str, existing_nodes_context=existing_nodes_context, include_reflection=include_reflection)
                 if nodes_result:
                     summary.nodes, summary.deleted_nodes = nodes_result
 

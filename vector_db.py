@@ -1,5 +1,7 @@
 import os
 import re
+import time
+import gc
 from pathlib import Path
 from typing import List, Dict, Optional
 from astrbot.api import logger
@@ -13,11 +15,14 @@ class VectorDB:
         hf_endpoint: str = "",
         trust_remote_code: bool = False,
         offline_mode: bool = False,
-        ai_name: str = ""
+        ai_name: str = "",
+        idle_timeout: int = -1
     ):
         self.db_path = db_path
         self.offline_mode = offline_mode
         self.ai_name = ai_name
+        self.idle_timeout = idle_timeout
+        self.last_access_time = time.time()
         
         if self.offline_mode:
             os.environ["TRANSFORMERS_OFFLINE"] = "1"
@@ -218,7 +223,9 @@ class VectorDB:
             raise RuntimeError("\n".join(tips)) from exc
 
     def _ensure_model(self):
+        self.last_access_time = time.time()
         if self.model is None:
+            logger.info("[APLR] 正在加载向量模型...")
             self.model = self._load_embedding_model(
                 model_name=self.model_name,
                 model_cache_dir=self.model_cache_dir,
@@ -226,6 +233,22 @@ class VectorDB:
                 trust_remote_code=self.trust_remote_code,
                 offline_mode=self.offline_mode
             )
+
+    def check_and_unload_model(self):
+        """检查并根据闲置时间卸载模型"""
+        if self.idle_timeout > 0 and self.model is not None:
+            if time.time() - self.last_access_time > self.idle_timeout * 60:
+                logger.info(f"[APLR] 向量模型已闲置超过 {self.idle_timeout} 分钟，正在从内存释放...")
+                self.model = None
+                gc.collect()
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                except:
+                    pass
+                return True
+        return False
 
     def get_embeddings(self, texts: List[str]) -> List[List[float]]:
         """获取文本的向量表示（供外部插件调用）"""

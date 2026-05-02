@@ -264,6 +264,8 @@ def clean_dialogue_with_different_limits(
 
             # user 消息
             if role == "user" and final_text:
+                if final_text == "Output your last task result below.":
+                    continue
                 current_username = turn_nickname if turn_nickname else username
                 if len(final_text) <= max_user_chars:
                     daily_txt[date_key].append(f"[{timestamp}] {current_username}: {final_text}")
