@@ -23,7 +23,7 @@ import subprocess
 import sys
 import numpy as np
 
-@register("local_reminiscence", "olozhika", "基于定时总结和向量化的本地记忆插件", "1.2.2")
+@register("local_reminiscence", "olozhika", "基于定时总结和向量化的本地记忆插件", "1.3.4")
 class LocalReminiscencePlugin(Star):
     def __init__(self, context: Context, config: any = None):
         super().__init__(context)
