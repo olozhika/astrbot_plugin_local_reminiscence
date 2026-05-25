@@ -322,6 +322,26 @@ class VectorDB:
             metadatas=[{"type": "theme"}] * len(ids)
         )
 
+    def delete_events(self, event_ids: List[str]):
+        """从 ChromaDB 中删除指定的事件"""
+        if not event_ids:
+            return
+        try:
+            self.collection.delete(ids=event_ids)
+            logger.info(f"[APLR] 已从向量库删除 {len(event_ids)} 条事件向量")
+        except Exception as e:
+            logger.error(f"[APLR] 从向量库删除事件失败: {e}")
+
+    def delete_themes(self, theme_ids: List[str]):
+        """从 ChromaDB 中删除指定的主题"""
+        if not theme_ids:
+            return
+        try:
+            self.theme_collection.delete(ids=theme_ids)
+            logger.info(f"[APLR] 已从向量库删除 {len(theme_ids)} 个主题向量")
+        except Exception as e:
+            logger.error(f"[APLR] 从向量库删除主题失败: {e}")
+
     def search_all(self, query: str, top_n_events: int = 10, top_n_themes: int = 5) -> List[Dict]:
         """同时搜索事件和主题，返回统一排序后的结果"""
         self._ensure_model()
