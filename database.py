@@ -213,6 +213,68 @@ class MemoryDB:
                     
             conn.commit()
 
+    def delete_summary_by_date(self, date: str) -> tuple[List[str], List[str], List[str]]:
+        """
+        清除指定日期的所有事件、日总结以及其与标签、主题和关系的连接，并返回：
+        - 被删除的所有事件的ID (deleted_event_ids)
+        - 仍保留但需要更新重心的主题ID (themes_to_update)
+        - 应该被删除的主题ID (themes_to_delete)
+        """
+        deleted_event_ids = []
+        themes_to_update = []
+        themes_to_delete = []
+        
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            
+            # 1. 查找此日期已存在的所有 event_id
+            cursor.execute("SELECT event_id FROM events WHERE date = ?", (date,))
+            rows = cursor.fetchall()
+            deleted_event_ids = [row['event_id'] for row in rows]
+            
+            if deleted_event_ids:
+                placeholders = ','.join(['?'] * len(deleted_event_ids))
+                
+                # 2. 找到这些 event_id 所关联的主题 ID
+                cursor.execute(f"SELECT DISTINCT theme_id FROM event_theme_map WHERE event_id IN ({placeholders})", deleted_event_ids)
+                affected_theme_ids = [row['theme_id'] for row in cursor.fetchall()]
+                
+                # 3. 删除事件标签连接
+                cursor.execute(f"DELETE FROM event_tags WHERE event_id IN ({placeholders})", deleted_event_ids)
+                
+                # 4. 删除事件主题映射
+                cursor.execute(f"DELETE FROM event_theme_map WHERE event_id IN ({placeholders})", deleted_event_ids)
+                
+                # 5. 删除事件关系
+                cursor.execute(f"DELETE FROM event_relations WHERE source_event_id IN ({placeholders}) OR target_event_id IN ({placeholders})", deleted_event_ids + deleted_event_ids)
+                
+                # 6. 删除事件本身
+                cursor.execute("DELETE FROM events WHERE date = ?", (date,))
+                
+                # 7. 处理受影响的主题 (thematic_memories) 
+                for theme_id in affected_theme_ids:
+                    cursor.execute("SELECT COUNT(*) as count FROM event_theme_map WHERE theme_id = ?", (theme_id,))
+                    count = cursor.fetchone()['count']
+                    if count == 0:
+                        # 这是一个空主题，直接在 SQLite 中物理删除
+                        cursor.execute("DELETE FROM thematic_memories WHERE theme_id = ?", (theme_id,))
+                        themes_to_delete.append(theme_id)
+                    else:
+                        cursor.execute("""
+                            UPDATE thematic_memories 
+                            SET event_count = ?, 
+                                last_summarized_count = MIN(last_summarized_count, ?)
+                            WHERE theme_id = ?
+                        """, (count, count, theme_id))
+                        themes_to_update.append(theme_id)
+            
+            # 8. 删除每日总结 (daily_reflections)
+            cursor.execute("DELETE FROM daily_reflections WHERE date = ?", (date,))
+            
+            conn.commit()
+            
+        return deleted_event_ids, themes_to_update, themes_to_delete
+
     def insert_relations(self, relations: List):
         """插入事件关系列表"""
         if not relations:

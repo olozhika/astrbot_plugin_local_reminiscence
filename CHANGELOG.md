@@ -4,8 +4,7 @@
 2. 增加下列调试工具：
    - \APLR_maintenance load_model ：一键/手动下载并提前加载向量模型，避免后续因自动触发导致首次响应卡顿
    - \APLR_maintenance delete_daily_summary [YYYY-MM-DD] ：删除指定日期的事件、日总结、向量与其连接，并清理当日聊天日志文件
-
-
+   
 ### 🔄 小更新说明 (v1.3.3)
 
 1. 在设置中增加每日总结-记忆节点环节配置

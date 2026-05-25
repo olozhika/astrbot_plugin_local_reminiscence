@@ -6,6 +6,16 @@
 
 A lightweight local memory plugin for AstrBot that uses local embedding models and local database storage to save and recall chat history. No API keys required, zero embedding costs, token-saving, and complete privacy protection. Automatically records conversations using Cron jobs, and helps AI automatically recall relevant experiences through deep learning semantic search.
 
+### 🔄 小更新说明 (v1.3.4)
+
+1. 优化部分工具提示词
+2. 增加下列调试工具：
+   - \APLR_maintenance load_model ：一键/手动下载并提前加载向量模型，避免后续因自动触发导致首次响应卡顿
+   - \APLR_maintenance delete_daily_summary [YYYY-MM-DD] ：删除指定日期的事件、日总结、向量与其连接，并清理当日聊天日志文件
+
+<details>
+<summary>点击展开更早版本更新说明</summary>
+
 ### 🔄 小更新说明 (v1.3.3)
 
 1. 在设置中增加每日总结-记忆节点环节配置
@@ -14,8 +24,6 @@ A lightweight local memory plugin for AstrBot that uses local embedding models a
 2. 在设置中增加配置，支持向量模型闲置一段时间后自动取消挂载
 3. 修复了使用vectorize指令重新向量化所有事件和主题时，主题记忆向量写入报错的bug
 
-<details>
-<summary>点击展开更早版本更新说明</summary>
 
 ### 🔄 小更新说明 (v1.3.2)
 
@@ -223,6 +231,9 @@ To use this plugin, you must perform the first three steps!
 | └ `update_nodes` | `[YYYY-MM-DD]` | 从已有事件中重新提取记忆节点 |
 | └ `write_node` | `[名] [类] [述]` | 手动写入或更新记忆节点 |
 | └ `extract_history` | `[YYYY-MM-DD]` | 从数据库提取指定日期的聊天记录 |
+| └ `load_model` | | 一键/手动下载并提前加载向量模型，避免后续因自动触发导致首次响应卡顿 |
+| └ `delete_daily_summary` | `[YYYY-MM-DD]` | 删除指定日期的事件、日总结、向量与其连接，并清理当日聊天日志文件 |
+
 
 ### 🧰 工具列表 / LLM Tools
 | 工具名称 | 参数 | 说明 |
