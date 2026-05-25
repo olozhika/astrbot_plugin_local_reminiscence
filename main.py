@@ -23,7 +23,7 @@ import subprocess
 import sys
 import numpy as np
 
-@register("local_reminiscence", "olozhika", "基于定时总结和向量化的本地记忆插件", "1.3.3")
+@register("local_reminiscence", "olozhika", "基于定时总结和向量化的本地记忆插件", "1.2.2")
 class LocalReminiscencePlugin(Star):
     def __init__(self, context: Context, config: any = None):
         super().__init__(context)
@@ -684,6 +684,85 @@ class LocalReminiscencePlugin(Star):
             logger.error(f"提取聊天记录失败: {e}")
             yield event.plain_result(f"❌ 提取聊天记录失败: {e}")
 
+    @aplr_maintenance_group.command("load_model")
+    async def load_model_command(self, event: AstrMessageEvent):
+        """手动或提前一键加载/下载向量模型。用法：/APLR_maintenance load_model。"""
+        yield event.plain_result("⏳ 正在启动/下载并加载向量模型，如果是首次加载可能需要下载模型（耗时几分钟），请稍候...")
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, self.vector_db._ensure_model)
+            yield event.plain_result("✅ 向量模型加载并就绪成功！")
+        except Exception as e:
+            logger.error(f"[APLR] 手动加载向量模型失败: {e}", exc_info=True)
+            yield event.plain_result(f"❌ 向量模型加载失败: {e}\n建议检查网络连接或尝试手动下载模型。\n手动下载模型方法\n1. 访问镜像站下载地址：hf-mirror.com/.../paraphrase-multilingual-MiniLM-L12-v2 \n2. （像使用github一样）下载该页面下的所有文件（尤其是 pytorch_model.bin 或 model.safetensors）。 \n3. 在本地创建一个文件夹（例如 D:\AI_Models\paraphrase-multilingual-MiniLM-L12-v2），把下载的文件全部放进去 \n4. 修改插件配置：在插件设置的 embedding_model 项中，直接填写这个本地文件夹的绝对路径（例如 D:\AI_Models\paraphrase-multilingual-MiniLM-L12-v2）。\n5. 重启 AstrBot。")
+
+    @aplr_maintenance_group.command("delete_daily_summary")
+    async def delete_daily_summary_command(self, event: AstrMessageEvent):
+        """删除指定日期的所有事件、日总结及其向量与连接，并清理对应的对话记录文件。用法：/APLR_maintenance delete_daily_summary [日期]（格式YYYY-MM-DD）。"""
+        args = event.message_str.strip().split()
+        if len(args) < 3:
+            yield event.plain_result("用法：/APLR_maintenance delete_daily_summary [YYYY-MM-DD]")
+            return
+            
+        date_str = args[2]
+        try:
+            datetime.strptime(date_str, "%Y-%m-%d")
+        except ValueError:
+            yield event.plain_result("日期格式不正确，请使用 YYYY-MM-DD")
+            return
+            
+        yield event.plain_result(f"⏳ 正在删除 {date_str} 的所有本地记忆记录与向量...")
+        
+        try:
+            deleted_evs, themes_to_up, themes_to_del = self.db.delete_summary_by_date(date_str)
+            if deleted_evs:
+                self.vector_db.delete_events(deleted_evs)
+            if themes_to_del:
+                self.vector_db.delete_themes(themes_to_del)
+                
+            if themes_to_up:
+                event_collection = self.vector_db.client.get_collection("events")
+                theme_collection = self.vector_db.theme_collection
+                for theme_id in themes_to_up:
+                    theme_events = self.db.get_events_by_theme(theme_id)
+                    if theme_events:
+                        t_event_ids = [te['event_id'] for te in theme_events]
+                        try:
+                            res = event_collection.get(ids=t_event_ids, include=['embeddings'])
+                            embeddings = res.get('embeddings')
+                            if embeddings is not None and len(embeddings) > 0:
+                                embs = np.array(embeddings, dtype=np.float32)
+                                centroid = np.mean(embs, axis=0)
+                                theme_collection.upsert(
+                                    ids=[theme_id],
+                                    embeddings=[centroid.tolist()]
+                                )
+                        except Exception as theme_vec_err:
+                            logger.error(f"[APLR] 重新计算受影响主题 {theme_id} 的重心向量失败: {theme_vec_err}")
+            
+            deleted_files_count = 0
+            if self.dialog_folder.exists() and self.dialog_folder.is_dir():
+                for f in self.dialog_folder.iterdir():
+                    if f.is_file() and f.name.startswith(date_str):
+                        try:
+                            f.unlink()
+                            deleted_files_count += 1
+                        except Exception as file_err:
+                            logger.error(f"[APLR] 删除当日对话文件失败 {f.name}: {file_err}")
+            
+            msg = f"✅ 已成功清除 {date_str} 的数据：\n- 删除了 {len(deleted_evs)} 个事件及其向量\n- 删除了 {len(themes_to_del)} 个空主题"
+            if themes_to_up:
+                msg += f"\n- 更新了 {len(themes_to_up)} 个关联主题的重心"
+            if deleted_files_count > 0:
+                msg += f"\n- 删除了 {deleted_files_count} 个当日的聊天日志文件"
+            else:
+                msg += f"\n- 未在该日发现对应的聊天日志文件"
+                
+            yield event.plain_result(msg)
+        except Exception as e:
+            logger.error(f"[APLR] 手动删除当日数据失败 {date_str}: {e}", exc_info=True)
+            yield event.plain_result(f"❌ 删除数据失败: {e}")
+
     @aplr_maintenance_group.command("vectorize")
     async def vectorize_events_command(self, event: AstrMessageEvent):
         """将指定日期的事件向量化并存入向量数据库。用法：/APLR_maintenance vectorize [日期|all]（格式YYYY-MM-DD）。"""
@@ -1164,7 +1243,7 @@ class LocalReminiscencePlugin(Star):
         
         注意：
         1. 请务必先使用 `recall_node_tool` 查询相应节点是否存在。
-        2. 如果节点已存在，请在保留完整核心事实（如身份、关键背景）的基础上，根据今日信息更新其状态或追加新进展。
+        2. 如果节点已存在，请务必在保留完整核心事实（如身份、关键背景）的基础上，根据今日信息更新其状态或追加新进展。记忆节点中已有的信息是你宝贵的记忆财富，不要轻易丢弃其中的内容，除非里面的内容已经不合时宜。
         
         Args:
             name(string): 节点名称。
@@ -1564,7 +1643,7 @@ class LocalReminiscencePlugin(Star):
 
     @llm_tool(name="daily_summary_tool")
     async def daily_summary_tool(self, event: AstrMessageEvent, date: str = "") -> str:
-        """进行每日总结用的工具，回顾并总结今日或指定日期的交流。除了每日总结环节以外，请不要主动触发！
+        """进行每日总结用的工具，回顾并总结今日或指定日期的交流。只在执行关于每日总结的Cron job，或监护人要求你使用时触发，此外的任何情况请不要主动触发！
         
         Args:
             date(string): 要总结的日期，格式为 YYYY-MM-DD。如果不提供则默认为今天。
@@ -1862,6 +1941,39 @@ class LocalReminiscencePlugin(Star):
             return
 
         try:
+            # 自动清除旧的当日事件、日总结及其向量与连接，避免出现重复
+            try:
+                logger.info(f"[APLR] 开始检查并自动清除 {date_str} 的旧事件与日总结记录...")
+                deleted_evs, themes_to_up, themes_to_del = self.db.delete_summary_by_date(date_str)
+                if deleted_evs:
+                    self.vector_db.delete_events(deleted_evs)
+                    logger.info(f"[APLR] 已自动清除 {len(deleted_evs)} 条已存在的当日事件向量")
+                if themes_to_del:
+                    self.vector_db.delete_themes(themes_to_del)
+                    logger.info(f"[APLR] 已自动清除 {len(themes_to_del)} 个空主题向量")
+                if themes_to_up:
+                    event_collection = self.vector_db.client.get_collection("events")
+                    theme_collection = self.vector_db.theme_collection
+                    for theme_id in themes_to_up:
+                        theme_events = self.db.get_events_by_theme(theme_id)
+                        if theme_events:
+                            t_event_ids = [te['event_id'] for te in theme_events]
+                            try:
+                                res = event_collection.get(ids=t_event_ids, include=['embeddings'])
+                                embeddings = res.get('embeddings')
+                                if embeddings is not None and len(embeddings) > 0:
+                                    embs = np.array(embeddings, dtype=np.float32)
+                                    centroid = np.mean(embs, axis=0)
+                                    theme_collection.upsert(
+                                        ids=[theme_id],
+                                        embeddings=[centroid.tolist()]
+                                    )
+                            except Exception as theme_vec_err:
+                                logger.error(f"[APLR] 重新计算受影响主题 {theme_id} 的重心向量失败: {theme_vec_err}")
+                    logger.info(f"[APLR] 已同步更新受影响的 {len(themes_to_up)} 个主题的重心向量")
+            except Exception as clear_err:
+                logger.error(f"[APLR] 自动清理 {date_str} 历史事件和总结失败: {clear_err}", exc_info=True)
+
             # 存储到数据库
             self.db.insert_summary(summary)
             
