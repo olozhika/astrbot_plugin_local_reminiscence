@@ -6,15 +6,21 @@
 
 A lightweight local memory plugin for AstrBot that uses local embedding models and local database storage to save and recall chat history. No API keys required, zero embedding costs, token-saving, and complete privacy protection. Automatically records conversations using Cron jobs, and helps AI automatically recall relevant experiences through deep learning semantic search.
 
+### 🔄 待更新内容 (v1.3.5)
+
+1. 自定义日期分隔
+2. 优化自动实时读聊天记录的方式（希望能把工具调用和AI的思考部分记下来）
+3. 可能考虑让用户自己选择是否把AI工具调用记入聊天日志
+
+<details>
+<summary>点击展开更早版本更新说明</summary>
+
 ### 🔄 小更新说明 (v1.3.4)
 
 1. 优化部分工具提示词
 2. 增加下列调试工具：
    - \APLR_maintenance load_model ：一键/手动下载并提前加载向量模型，避免后续因自动触发导致首次响应卡顿
    - \APLR_maintenance delete_daily_summary [YYYY-MM-DD] ：删除指定日期的事件、日总结、向量与其连接，并清理当日聊天日志文件
-
-<details>
-<summary>点击展开更早版本更新说明</summary>
 
 ### 🔄 小更新说明 (v1.3.3)
 
@@ -279,7 +285,9 @@ To use this plugin, you must perform the first three steps!
 
 ## 📄 To Do List
 
-- [x] 把回忆权重（重要性 时间衰减等）变成可根据个人需求手动调节的形式
+- [ ] 记忆条数达到一定数量或翻倍后自动提醒用户进行记忆聚类（大固化） v1.4.0
+- [ ] 通过记忆节点名称把事件串联 v1.4.0
+- [ ] 把本插件详细使用方法和各接口写个专门的md文件，现在README太长了 v1.4.0
 - [ ] 可选择性开启的记忆强度动态变化（经常被回忆起的内容强度增加）
 - [ ] 记忆节点标签优化
 - [ ] 节点关联
