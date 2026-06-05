@@ -91,7 +91,7 @@ class LocalReminiscencePlugin(Star):
         memory_db_path_rel = self.config.get("memory_db_path", "APLR_DailyReview.db")
         vector_db_path_rel = self.config.get("vector_db_path", "APLR_VectorDB")
 
-        data_dir = StarTools.get_data_dir()
+        data_dir = StarTools.get_data_dir("astrbot_plugin_local_reminiscence")
         
         # 路径解析逻辑：优先考虑绝对路径，否则相对于插件数据目录
         def resolve_path(path_str, data_path):
