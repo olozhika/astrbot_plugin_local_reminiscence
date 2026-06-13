@@ -23,7 +23,7 @@ import subprocess
 import sys
 import numpy as np
 
-@register("local_reminiscence", "olozhika", "基于定时总结和向量化的本地记忆插件", "1.3.4")
+@register("local_reminiscence", "olozhika", "基于定时总结和向量化的本地记忆插件", "1.2.2")
 class LocalReminiscencePlugin(Star):
     def __init__(self, context: Context, config: any = None):
         super().__init__(context)
@@ -91,7 +91,7 @@ class LocalReminiscencePlugin(Star):
         memory_db_path_rel = self.config.get("memory_db_path", "APLR_DailyReview.db")
         vector_db_path_rel = self.config.get("vector_db_path", "APLR_VectorDB")
 
-        data_dir = StarTools.get_data_dir()
+        data_dir = StarTools.get_data_dir("astrbot_plugin_local_reminiscence")
         
         # 路径解析逻辑：优先考虑绝对路径，否则相对于插件数据目录
         def resolve_path(path_str, data_path):
@@ -150,42 +150,109 @@ class LocalReminiscencePlugin(Star):
             except Exception as e:
                 logger.error(f"[APLR] 向量模型闲置检测任务异常: {e}")
 
-    def _append_to_realtime_log(self, unified_id: str, role: str, content: str):
-        """将消息追加到实时日志文件"""
-        if not self.config.get("realtime_recording", False):
-            return
-        
-        now = datetime.now()
-        date_str = now.strftime("%Y-%m-%d")
-        timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
-        
-        safe_id = unified_id.replace(":", "_") if unified_id else "unknown"
-        folder = self.dialog_folder
-        folder.mkdir(parents=True, exist_ok=True)
-        dialog_file = folder / f"{date_str}_dialog_{safe_id}.json"
-        
-        data = {"conversations": []}
-        if dialog_file.exists():
-            try:
-                with open(dialog_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-            except Exception as e:
-                logger.error(f"[APLR] 读取实时日志失败: {e}")
-        
-        if not isinstance(data.get("conversations"), list):
-            data["conversations"] = []
+    def _is_session_matching(self, unified_id: str) -> bool:
+        """检查会话ID是否匹配监测配置"""
+        if not unified_id:
+            return False
+        target_list = list(self.target_user_id_list) if isinstance(self.target_user_id_list, list) else [self.target_user_id_list]
+        if len(target_list) == 1 and str(target_list[0]).strip().lower() == "all":
+            return True
+        return unified_id in target_list
 
-        data["conversations"].append({
-            "timestamp": timestamp,
-            "role": role,
-            "content": content
-        })
-        
+    def _get_effective_user_ids(self, date_str: str = None) -> List[str]:
+        """获取需要导出的实际会话ID列表，当配置为['all']时自动检索所有用户的ID"""
+        target_list = list(self.target_user_id_list) if isinstance(self.target_user_id_list, list) else [self.target_user_id_list]
+        if len(target_list) == 1 and str(target_list[0]).strip().lower() == "all":
+            effective_user_ids = []
+            
+            # 1. 扫描本地文件夹中的现有 JSON 会话记录（针对该日期已录制的情况）
+            if date_str:
+                try:
+                    for filepath in self.dialog_folder.glob(f"{date_str}_dialog_*.json"):
+                        filename = filepath.name
+                        prefix_len = len(f"{date_str}_dialog_")
+                        suffix_len = len(".json")
+                        safe_id = filename[prefix_len:-suffix_len]
+                        if safe_id and safe_id not in effective_user_ids:
+                            effective_user_ids.append(safe_id)
+                except Exception as e:
+                    logger.error(f"[APLR] 扫描本地 JSON 发现用户ID失败: {e}")
+            
+            # 2. 从核心数据库获取所有用户 ID（用于未开启实时录制但需提取全部的情况）
+            try:
+                import sqlite3
+                core_db_path = Path.cwd() / "data" / "data_v4.db"
+                if core_db_path.exists():
+                    conn = sqlite3.connect(str(core_db_path))
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT DISTINCT user_id FROM conversations")
+                    db_user_ids = [row[0] for row in cursor.fetchall() if row[0]]
+                    conn.close()
+                    for db_uid in db_user_ids:
+                        if db_uid not in effective_user_ids:
+                            effective_user_ids.append(db_uid)
+            except Exception as e:
+                logger.error(f"[APLR] 从核心数据库获取所有用户ID失败: {e}")
+                
+            if not effective_user_ids:
+                effective_user_ids = ["all"]
+            return effective_user_ids
+        else:
+            return target_list
+
+    def _append_to_realtime_log(self, unified_id: str, role: str, content: str):
+        """将消息追加到实时日志文件 (JSON)"""
         try:
-            with open(dialog_file, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            if not self.config.get("realtime_recording", False):
+                return
+            
+            now = datetime.now()
+            date_str = now.strftime("%Y-%m-%d")
+            timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
+            
+            safe_id = unified_id.replace(":", "_") if unified_id else "unknown"
+            folder = self.dialog_folder
+            folder.mkdir(parents=True, exist_ok=True)
+            dialog_file = folder / f"{date_str}_dialog_{safe_id}.json"
+            
+            # 使用 JSON 覆盖模式，抗文件破损
+            data = {"conversations": []}
+            if dialog_file.exists():
+                try:
+                    with open(dialog_file, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                except Exception as e:
+                    logger.error(f"[APLR] 读取实时 JSON 失败，可能存在破损 (已备份容错): {e}")
+                    try:
+                        dialog_file.rename(dialog_file.with_suffix('.json.corrupted'))
+                    except:
+                        pass
+                    data = {"conversations": []}
+            
+            if not isinstance(data.get("conversations"), list):
+                data["conversations"] = []
+
+            data["conversations"].append({
+                "timestamp": timestamp,
+                "role": role,
+                "content": content
+            })
+            
+            # 使用原子层级写入：写入 temp file 成功后直接原子替换
+            temp_file = dialog_file.with_suffix('.json.tmp')
+            try:
+                with open(temp_file, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                temp_file.replace(dialog_file)
+            except Exception as e:
+                logger.error(f"[APLR] 写入实时 JSON 失败: {e}")
+                if temp_file.exists():
+                    try:
+                        temp_file.unlink()
+                    except:
+                        pass
         except Exception as e:
-            logger.error(f"[APLR] 写入实时日志失败: {e}")
+            logger.error(f"[APLR] _append_to_realtime_log 遭遇不可期异常 (不影响聊天进程): {e}")
 
     def _get_unified_id(self, event: any) -> str:
         """从各种可能的事件对象中安全获取 unified_id"""
@@ -255,17 +322,19 @@ class LocalReminiscencePlugin(Star):
         # 如果未开启实时记录且不需要注入逻辑，理论上可以跳过大半，但注入逻辑是核心功能，所以只在记录处检查。
         
         # 记录用户消息（实时记录模式）
-        unified_id = self._get_unified_id(event)
-        if self.config.get("realtime_recording", False):
-            if unified_id in self.target_user_id_list:
-                actual_event = getattr(event, 'event', event)
-                nickname = self._get_sender_nickname(event)
-                text = actual_event.get_plain_text() if hasattr(actual_event, 'get_plain_text') else getattr(actual_event, 'message_str', '')
-                if text:
-                    self._append_to_realtime_log(unified_id, nickname, text)
-            else:
-                logger.debug(f"[APLR] 实时记录跳过: 用户 ID '{unified_id}' 不在监测列表 {self.target_user_id_list} 中")
+        try:
+            unified_id = self._get_unified_id(event) or "system"
+            if self.config.get("realtime_recording", False):
+                if self._is_session_matching(unified_id):
+                    actual_event = getattr(event, 'event', event)
+                    nickname = self._get_sender_nickname(event)
+                    text = actual_event.get_plain_text() if hasattr(actual_event, 'get_plain_text') else getattr(actual_event, 'message_str', '')
+                    if text:
+                        self._append_to_realtime_log(unified_id, nickname, text)
+        except Exception as e:
+            logger.error(f"[APLR] 实时记录用户消息异常 (不影响聊天): {e}")
         
+        unified_id = self._get_unified_id(event) or "system"
         # 提取 req (ProviderRequest)
         req = kwargs.get('req') or (args[0] if args and isinstance(args[0], ProviderRequest) else None)
         if not req:
@@ -301,7 +370,13 @@ class LocalReminiscencePlugin(Star):
             else:
                 conversation: Conversation = await conv_mgr.get_conversation(uid, curr_cid)
                 # 下面这行这么写纯粹是因为作者olozhika不熟悉json格式...
-                if not conversation or not conversation.history or conversation.history == '[]' or json.loads(conversation.history) == []:
+                history_json_empty = False
+                if conversation and conversation.history:
+                    try:
+                        history_json_empty = (json.loads(conversation.history) == [])
+                    except Exception:
+                        history_json_empty = True
+                if not conversation or not conversation.history or conversation.history == '[]' or history_json_empty:
                     is_new_session = True
             
             # 如果是新对话开启，则注入历史摘要
@@ -494,73 +569,173 @@ class LocalReminiscencePlugin(Star):
     @filter.on_llm_response()
     async def on_llm_response(self, event: any, *args, **kwargs):
         """记录 AI 的回复（实时模式）"""
-        if not self.config.get("realtime_recording", False):
-            return
-        
-        unified_id = self._get_unified_id(event)
-        if not event or unified_id not in self.target_user_id_list:
-            return
+        try:
+            if not self.config.get("realtime_recording", False):
+                return
             
-        ai_name = self.ai_name
-        
-        # 优先使用传入的 resp，如果没有则尝试从事件对象中获取（部分版本兼容）
-        resp = kwargs.get('resp') or (args[0] if args else getattr(event, 'resp', None))
-        if not resp:
-            return
-        
-        # 尝试提取思考过程 (支持某些带有思考的模型)
-        think_content = ""
-        if hasattr(resp, 'extra') and isinstance(resp.extra, dict):
-            # 不同 provider 的字段名可能不同
-            think_content = resp.extra.get('think', '') or resp.extra.get('reasoning', '')
+            if not event:
+                return
+            unified_id = self._get_unified_id(event) or "system"
+            if not self._is_session_matching(unified_id):
+                return
+                
+            ai_name = self.ai_name
             
-        if think_content:
-            self._append_to_realtime_log(unified_id, ai_name, f"(思考: {think_content.strip()})")
+            # 优先使用传入的 resp，如果没有则尝试从事件对象中获取（部分版本兼容）
+            resp = kwargs.get('resp') or (args[0] if args else getattr(event, 'resp', None))
+            if not resp:
+                return
             
-        # 记录主干回复
-        text = getattr(resp, 'completion_text', '')
-        if text:
-            text = text.strip()
-            # 过滤掉 APLR 内部可能产生的空回复或标记
-            if text and not text.startswith("I finished this job"):
-                self._append_to_realtime_log(unified_id, ai_name, text)
+            actual_event = getattr(event, 'event', event)
+            is_cron = (actual_event.__class__.__name__ == "CronMessageEvent")
+            
+            # 尝试提取思考过程 (支持标准 reasoning_content 属性，以及一些带有思考的 extra 思考)
+            think_content = ""
+            if hasattr(resp, 'reasoning_content') and resp.reasoning_content:
+                think_content = resp.reasoning_content
+            elif hasattr(resp, 'extra') and isinstance(resp.extra, dict):
+                # 不同 provider 的字段名可能不同
+                think_content = resp.extra.get('think', '') or resp.extra.get('reasoning', '')
+                
+            if is_cron:
+                # 3. 对于cron job中的AI说话和reasoning_content其实都是思考，在这种情况下可以把reasoning_content记作深层思考，其他内容记做浅层思考
+                if think_content:
+                    self._append_to_realtime_log(unified_id, ai_name, f"(深层思考: {think_content.strip()})")
+                
+                text = getattr(resp, 'completion_text', '')
+                if text:
+                    text = text.strip()
+                    if text and not text.startswith("I finished this job"):
+                        self._append_to_realtime_log(unified_id, ai_name, f"(浅层思考: {text})")
+            else:
+                if think_content:
+                    self._append_to_realtime_log(unified_id, ai_name, f"(思考: {think_content.strip()})")
+                
+                # 记录主干回复
+                text = getattr(resp, 'completion_text', '')
+                if text:
+                    text = text.strip()
+                    # 过滤掉 APLR 内部可能产生的空回复或标记
+                    if text and not text.startswith("I finished this job"):
+                        self._append_to_realtime_log(unified_id, ai_name, text)
+        except Exception as e:
+            logger.error(f"[APLR] 实时记录 AI 回复异常 (不影响聊天): {e}")
 
     @filter.on_llm_tool_respond()
     async def on_llm_tool_respond(self, event: any, *args, **kwargs):
         """记录工具调用活动（实时模式）"""
-        if not self.config.get("realtime_recording", False):
-            return
-        
-        unified_id = self._get_unified_id(event)
-        if not event or unified_id not in self.target_user_id_list:
-            return
-
-        ai_name = self.ai_name
-        
-        # 优先使用单独传参，否则尝试从事件对象或 kwargs 获取
-        # args[0] 是 tool_name, args[1] 是 args, args[2] 是 result (如果是通过位置参数传递)
-        tool_name = kwargs.get('tool_name') or (args[0] if len(args) > 0 else getattr(event, 'tool_name', 'unknown'))
-        tool_args = kwargs.get('args') or (args[1] if len(args) > 1 else getattr(event, 'args', {}))
-        result = kwargs.get('result') or (args[2] if len(args) > 2 else getattr(event, 'result', ''))
-
-        # 记录调用描述
         try:
-            args_str = json.dumps(tool_args, ensure_ascii=False)
-        except:
-            args_str = str(tool_args)
+            if not self.config.get("realtime_recording", False):
+                return
             
-        if len(args_str) > 200:
-            args_str = args_str[:200] + "..."
-        call_desc = f"(操作: 调用函数: {tool_name}({args_str}))"
-        self._append_to_realtime_log(unified_id, ai_name, call_desc)
-        
-        # 记录结果中的异常情况
-        res_str = str(result)
-        error_re = re.compile(r"(error|failed|exception|超时|失败|not found|insufficient|denied)", re.IGNORECASE)
-        match = error_re.search(res_str)
-        if match:
-            keyword = match.group(0).strip()
-            self._append_to_realtime_log(unified_id, ai_name, f"(操作失败: {keyword})")
+            if not event:
+                return
+            unified_id = self._get_unified_id(event) or "system"
+            if not self._is_session_matching(unified_id):
+                return
+                
+            ai_name = self.ai_name
+            
+            # 优先使用单独传参，否则尝试从事件对象或 kwargs 获取
+            # args[0] 是 tool_name, args[1] 是 args, args[2] 是 result (如果是通过位置参数传递)
+            tool_obj = kwargs.get('tool_name') or (args[0] if len(args) > 0 else getattr(event, 'tool_name', 'unknown'))
+            if hasattr(tool_obj, 'name'):
+                tool_name = tool_obj.name
+            else:
+                tool_name = str(tool_obj)
+                
+            tool_args = kwargs.get('args') or (args[1] if len(args) > 1 else getattr(event, 'args', {}))
+            result = kwargs.get('result') or (args[2] if len(args) > 2 else getattr(event, 'result', ''))
+
+            # 记录调用描述
+            try:
+                args_str = json.dumps(tool_args, ensure_ascii=False)
+            except:
+                args_str = str(tool_args)
+                
+            if len(args_str) > 200:
+                args_str = args_str[:200] + "..."
+            call_desc = f"(操作: 调用函数: {tool_name}({args_str}))"
+            self._append_to_realtime_log(unified_id, ai_name, call_desc)
+            
+            # 记录结果中的异常情况
+            is_error = None
+            
+            # 1. 企图通过属性判断
+            for attr in ['is_error', 'isError']:
+                if hasattr(result, attr):
+                    val = getattr(result, attr)
+                    if isinstance(val, bool):
+                        is_error = val
+                        break
+                        
+            # 2. 企图通过字典键判断
+            if is_error is None and isinstance(result, dict):
+                for k in ['is_error', 'isError']:
+                    if k in result:
+                        val = result[k]
+                        if isinstance(val, bool):
+                            is_error = val
+                            break
+                            
+            # 3. 企图通过序列化字符串特征判断 (特别针对 MCP CallToolResult)
+            res_str = str(result)
+            if is_error is None:
+                if "isError=False" in res_str or "is_error=False" in res_str:
+                    is_error = False
+                elif "isError=True" in res_str or "is_error=True" in res_str:
+                    is_error = True
+
+            if is_error is False:
+                # 明确为成功，不记录失败
+                pass
+            elif is_error is True:
+                # 明确为失败
+                self._append_to_realtime_log(unified_id, ai_name, "(操作失败: Error)")
+            else:
+                # 兜底：无明确 is_error 标识时，通过正则做模糊判断，并清洗掉 status / flag 字样
+                clean_res_str = res_str
+                clean_res_str = re.sub(r'is_?error\s*=\s*\w+', '', clean_res_str, flags=re.IGNORECASE)
+                
+                error_re = re.compile(r"(error|failed|exception|超时|失败|not found|insufficient|denied)", re.IGNORECASE)
+                match = error_re.search(clean_res_str)
+                if match:
+                    keyword = match.group(0).strip()
+                    self._append_to_realtime_log(unified_id, ai_name, f"(操作失败: {keyword})")
+
+            # 4. 特殊处理 send_message_to_user 工具：记录 AI 发送给用户的真实话语
+            if tool_name == "send_message_to_user" and not (is_error is True):
+                try:
+                    target_session = tool_args.get("session")
+                    target_unified_id = str(target_session) if target_session else unified_id
+                    
+                    if self._is_session_matching(target_unified_id):
+                        msg_parts = []
+                        messages_list = tool_args.get("messages", [])
+                        if isinstance(messages_list, list):
+                            for msg in messages_list:
+                                if not isinstance(msg, dict):
+                                    continue
+                                type_ = str(msg.get("type", "")).lower()
+                                if type_ == "plain":
+                                    msg_parts.append(msg.get("text", ""))
+                                elif type_ == "image":
+                                    msg_parts.append("[图片]")
+                                elif type_ == "record":
+                                    msg_parts.append("[语音消息]")
+                                elif type_ == "file":
+                                    name = msg.get("text") or (os.path.basename(msg.get("path")) if msg.get("path") else "") or "file"
+                                    msg_parts.append(f"[文件: {name}]")
+                                elif type_ == "mention_user":
+                                    msg_parts.append(f"@{msg.get('mention_user_id', '')}")
+                        
+                        sent_text = "".join(msg_parts).strip()
+                        if sent_text and not res_str.strip().startswith("error:"):
+                            self._append_to_realtime_log(target_unified_id, ai_name, sent_text)
+                except Exception as sexc:
+                    logger.error(f"[APLR] 记录 send_message_to_user 的内容时出错: {sexc}")
+        except Exception as e:
+            logger.error(f"[APLR] 实时记录工具活动异常 (不影响聊天): {e}")
 
     async def _get_nodes_context(self, text: str, include_description: bool = False, max_nodes: int = 8, limit_per_kw: int = 1) -> tuple[list[dict], list[str]]:
         """根据文本提取关键词并获取相关记忆节点对象"""
@@ -669,7 +844,8 @@ class LocalReminiscencePlugin(Star):
         
         try:
             core_db_path = Path.cwd() / "data" / "data_v4.db"
-            for target_user_id in self.target_user_id_list:
+            effective_ids = self._get_effective_user_ids(date_str)
+            for target_user_id in effective_ids:
                 clean_dialogue_with_different_limits(
                     db_path=core_db_path,
                     output_dir=self.dialog_folder,
@@ -1678,6 +1854,8 @@ class LocalReminiscencePlugin(Star):
         if not date_str or not date_str.strip():
             date_str = datetime.now().strftime("%Y-%m-%d")
 
+        effective_user_ids = self._get_effective_user_ids(date_str)
+
         # 检查是否已经存在该日期的实时记录 JSON
         folder = self.dialog_folder
         json_pattern = f"{date_str}_dialog_*.json"
@@ -1690,7 +1868,7 @@ class LocalReminiscencePlugin(Star):
                 core_db_path = Path.cwd() / "data" / "data_v4.db"
                 if core_db_path.exists():
                     logger.info(f"[APLR] 未找到日期 {date_str} 的记录文件，正在尝试从核心数据库提取...")
-                    for target_user_id in self.target_user_id_list:
+                    for target_user_id in effective_user_ids:
                         clean_dialogue_with_different_limits(
                             db_path=core_db_path,
                             output_dir=self.dialog_folder,
@@ -1720,7 +1898,7 @@ class LocalReminiscencePlugin(Star):
         current_size = 0.0
         last_time = None
 
-        for target_user_id in self.target_user_id_list:
+        for target_user_id in effective_user_ids:
             safe_id = target_user_id.replace(":", "_") if target_user_id else ""
             dialog_file = self.dialog_folder / f"{date_str}_dialog_{safe_id}.json"
             if not dialog_file.exists():
