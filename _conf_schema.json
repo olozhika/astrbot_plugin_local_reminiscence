@@ -155,6 +155,25 @@
     "hint": "控制匹配到罕见词（TF-IDF权重高）时的加成强度。默认 1.0。",
     "default": 1.0
   },
+  "day_boundary_config": {
+    "description": "自定义日期分割与自动总结配置",
+    "type": "object",
+    "hint": "配置自定义的一天开始时刻，以及是否在此时间点之后自动触发每日总结。",
+    "items": {
+      "boundary_cron": {
+        "description": "日期分割时间 (Cron 格式)",
+        "type": "string",
+        "hint": "形如 '0 4 * * *' (代表凌晨 4:00)，这必须是一个每天只执行一次的 cron 时间点。整理/记录聊天记录时，以此时间作为新一天的分割处。",
+        "default": "0 4 * * *"
+      },
+      "auto_summary_enabled": {
+        "description": "是否开启自动每日总结",
+        "type": "bool",
+        "hint": "开启后，系统将在用户定义的时间点 +1 分钟时自动执行每日总结。",
+        "default": false
+      }
+    }
+  },
   "dailyreview_nodes": {
     "description": "每日总结 - 记忆节点配置",
     "type": "object",
