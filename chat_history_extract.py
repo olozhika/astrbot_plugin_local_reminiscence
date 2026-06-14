@@ -54,9 +54,25 @@ def clean_dialogue_with_different_limits(
         max_assistant_chars=2000,
         platform="AstrBot",
         target_date=None,
-        target_user_id=None
+        target_user_id=None,
+        day_boundary_config: dict = None
     ):
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    h, m = 0, 0
+    has_boundary = False
+    if day_boundary_config:
+        boundary_cron = day_boundary_config.get("boundary_cron", "0 0 * * *")
+        try:
+            parts = boundary_cron.strip().split()
+            if len(parts) >= 2:
+                mm = int(parts[0])
+                hh = int(parts[1])
+                if 0 <= mm < 60 and 0 <= hh < 24:
+                    h, m = hh, mm
+                    has_boundary = True
+        except Exception:
+            pass
 
     if not db_path.exists():
         print(f"❌ 数据库不存在: {db_path}")
@@ -207,7 +223,37 @@ def clean_dialogue_with_different_limits(
                 process_content_item(contents)
             
             final_text = "\n".join(text_messages).strip()
-            date_key = get_date_key(timestamp) if timestamp else "unknown_date"
+            
+            is_excluded = False
+            if timestamp and has_boundary:
+                try:
+                    ts_norm = timestamp.replace(" ", "T")
+                    dt = datetime.fromisoformat(ts_norm)
+                    # 检查排除窗口：[boundary, boundary + 10min) 范围内不予记录
+                    dt_mins = dt.hour * 60 + dt.minute
+                    boundary_mins = h * 60 + m
+                    diff = (dt_mins - boundary_mins) % 1440
+                    if 0 <= diff < 10:
+                        is_excluded = True
+                    
+                    if not is_excluded:
+                        # 计算逻辑日期
+                        boundary_dt = dt.replace(hour=h, minute=m, second=0, microsecond=0)
+                        from datetime import timedelta
+                        if dt < boundary_dt:
+                            t_start = boundary_dt - timedelta(days=1)
+                        else:
+                            t_start = boundary_dt
+                        t_mid = t_start + timedelta(hours=12)
+                        date_key = t_mid.date().isoformat()
+                except Exception:
+                    date_key = get_date_key(timestamp) if timestamp else "unknown_date"
+            else:
+                date_key = get_date_key(timestamp) if timestamp else "unknown_date"
+                
+            if is_excluded:
+                continue
+
             if target_date and date_key != target_date:
                 continue
 
