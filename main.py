@@ -136,9 +136,101 @@ class LocalReminiscencePlugin(Star):
         
         # 启动背景检测任务
         asyncio.create_task(self._model_idle_check_loop())
+        asyncio.create_task(self._auto_summary_check_loop())
         
         # 延迟初始化固化器，因为需要 LLM 函数
         self.consolidator = None
+
+    def _parse_cron_time(self, cron_str: str) -> tuple[int, int]:
+        """从 cron 字符串中解析出小时和分钟。
+        假定格式为 'm h * * *' (例如 '0 4 * * *')。如果是其他复杂/不合法格式，兜底返回 (4, 0) 代表凌晨4点。
+        """
+        try:
+            parts = cron_str.strip().split()
+            if len(parts) >= 2:
+                minute = int(parts[0])
+                hour = int(parts[1])
+                if 0 <= minute < 60 and 0 <= hour < 24:
+                    return hour, minute
+        except Exception as e:
+            logger.error(f"[APLR] 解析 cron 发生异常 '{cron_str}': {e}")
+        return 4, 0  # 默认凌晨 4:00
+
+    def _get_logical_date(self, dt: datetime) -> str:
+        """获取给定时间的逻辑日期"""
+        boundary_conf = self.config.get("day_boundary_config", {})
+        boundary_cron = boundary_conf.get("boundary_cron", "0 4 * * *")
+        h, m = self._parse_cron_time(boundary_cron)
+        
+        # 构造同 calendar 天的 boundary limit
+        boundary_dt = dt.replace(hour=h, minute=m, second=0, microsecond=0)
+        from datetime import timedelta
+        if dt < boundary_dt:
+            t_start = boundary_dt - timedelta(days=1)
+        else:
+            t_start = boundary_dt
+        t_mid = t_start + timedelta(hours=12)
+        return t_mid.strftime("%Y-%m-%d")
+
+    def _get_completed_logical_date(self) -> str:
+        """获取刚刚结束的逻辑日期。如果是自动总结，应该针对此日期进行。"""
+        # 稍微拨回 5 分钟
+        from datetime import timedelta
+        past_time = datetime.now() - timedelta(minutes=5)
+        return self._get_logical_date(past_time)
+
+    def _is_in_exclusion_window(self, dt: datetime) -> bool:
+        """检查给定时间是否在 [boundary_time, boundary_time + 10min) 的排除窗口内"""
+        boundary_conf = self.config.get("day_boundary_config", {})
+        boundary_cron = boundary_conf.get("boundary_cron", "0 4 * * *")
+        h, m = self._parse_cron_time(boundary_cron)
+        
+        # 计算 boundary 对应的分钟数
+        boundary_mins = h * 60 + m
+        # 计算当前时间对应的分钟数
+        dt_mins = dt.hour * 60 + dt.minute
+        
+        diff = (dt_mins - boundary_mins) % 1440
+        return 0 <= diff < 10
+
+    async def _auto_summary_check_loop(self):
+        """自动每日总结触发检测循环（每分钟检查一次）"""
+        while True:
+            try:
+                await asyncio.sleep(60)
+                
+                # 读取配置
+                boundary_conf = self.config.get("day_boundary_config", {})
+                if not boundary_conf.get("auto_summary_enabled", False):
+                    continue
+                
+                boundary_cron = boundary_conf.get("boundary_cron", "0 4 * * *")
+                h, m = self._parse_cron_time(boundary_cron)
+                
+                # 计算 +1 分钟的时间
+                target_h = h
+                target_m = m + 1
+                if target_m >= 60:
+                    target_m %= 60
+                    target_h = (target_h + 1) % 24
+                
+                now = datetime.now()
+                if now.hour == target_h and now.minute == target_m:
+                    logger.info(f"[APLR] 触发自动每日总结：当前时间符合{boundary_cron} + 1min 时间点 ({target_h:02d}:{target_m:02d})")
+                    target_date = self._get_completed_logical_date()
+                    await self._run_automatic_daily_summary(target_date)
+            except Exception as e:
+                logger.error(f"[APLR] 自动每日总结检测任务异常: {e}")
+
+    async def _run_automatic_daily_summary(self, target_date: str):
+        logger.info(f"[APLR] 开始执行自动每日总结，日期: {target_date}")
+        try:
+            async for result in self._daily_summary_logic(event=None, date_str=target_date):
+                # 消费生成器
+                pass
+            logger.info(f"[APLR] 自动每日总结执行完毕，日期: {target_date}")
+        except Exception as e:
+            logger.error(f"[APLR] 自动每日总结执行遭遇异常: {e}", exc_info=True)
 
     async def _model_idle_check_loop(self):
         """向量模型闲置检测循环"""
@@ -207,7 +299,10 @@ class LocalReminiscencePlugin(Star):
                 return
             
             now = datetime.now()
-            date_str = now.strftime("%Y-%m-%d")
+            if self._is_in_exclusion_window(now):
+                return
+            
+            date_str = self._get_logical_date(now)
             timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
             
             safe_id = unified_id.replace(":", "_") if unified_id else "unknown"
@@ -853,7 +948,8 @@ class LocalReminiscencePlugin(Star):
                     ai_name=self.ai_name,
                     platform="AstrBot",
                     target_date=date_str,
-                    target_user_id=target_user_id
+                    target_user_id=target_user_id,
+                    day_boundary_config=self.config.get("day_boundary_config", {})
                 )
             yield event.plain_result(f"✅ 已成功提取 {date_str} 的聊天记录。")
         except Exception as e:
@@ -1837,10 +1933,10 @@ class LocalReminiscencePlugin(Star):
         """为总结过程提供的事件搜索接口"""
         return await self._get_relevant_events(query, top_n=top_n, exclude_date=exclude_date)
 
-    async def _daily_summary_logic(self, event: AstrMessageEvent, date_str: str = None):
+    async def _daily_summary_logic(self, event: AstrMessageEvent = None, date_str: str = None):
         # 如果没有直接传入 date_str，则尝试从消息中解析
         if not date_str:
-            args = event.message_str.strip().split()
+            args = event.message_str.strip().split() if event else []
             # 兼容处理：跳过命令名或斜杠命令名
             if args and (args[0] in ["daily_summary", "/daily_summary", "daily_summary_command", "/daily_summary_command"]):
                 args = args[1:]
@@ -1848,11 +1944,11 @@ class LocalReminiscencePlugin(Star):
             if args:
                 date_str = args[0]
             else:
-                date_str = datetime.now().strftime("%Y-%m-%d")
+                date_str = self._get_logical_date(datetime.now())
         
         # 再次确保 date_str 是有效的字符串（处理 AI 可能传回的空字符串）
         if not date_str or not date_str.strip():
-            date_str = datetime.now().strftime("%Y-%m-%d")
+            date_str = self._get_logical_date(datetime.now())
 
         effective_user_ids = self._get_effective_user_ids(date_str)
 
@@ -1876,7 +1972,8 @@ class LocalReminiscencePlugin(Star):
                             ai_name=self.ai_name,
                             platform="AstrBot",
                             target_date=date_str,
-                            target_user_id=target_user_id
+                            target_user_id=target_user_id,
+                            day_boundary_config=self.config.get("day_boundary_config", {})
                         )
             except Exception as e:
                 logger.error(f"保底提取聊天记录失败: {e}")
@@ -1884,7 +1981,10 @@ class LocalReminiscencePlugin(Star):
         try:
             datetime.strptime(date_str, "%Y-%m-%d")
         except ValueError:
-            yield event.plain_result("日期格式好像不对哦，记得用 YYYY-MM-DD 这种格式~")
+            if event:
+                yield event.plain_result("日期格式好像不对哦，记得用 YYYY-MM-DD 这种格式~")
+            else:
+                logger.error(f"[APLR] 自动重整回忆任务日期格式不合法: {date_str}")
             return
         
         # 寻找聊天记录文件并合并
@@ -1893,11 +1993,11 @@ class LocalReminiscencePlugin(Star):
         
         max_kb = self.config.get("max_dialogue_kb_per_summary", 40)
         gap_hours = self.config.get("chunk_time_gap_hours", 1.0)
-
+ 
         current_chunk = []
         current_size = 0.0
         last_time = None
-
+ 
         for target_user_id in effective_user_ids:
             safe_id = target_user_id.replace(":", "_") if target_user_id else ""
             dialog_file = self.dialog_folder / f"{date_str}_dialog_{safe_id}.json"
@@ -1912,7 +2012,8 @@ class LocalReminiscencePlugin(Star):
                         ai_name=self.ai_name,
                         platform="AstrBot",
                         target_date=date_str,
-                        target_user_id=target_user_id
+                        target_user_id=target_user_id,
+                        day_boundary_config=self.config.get("day_boundary_config", {})
                     )
                 except Exception as e:
                     logger.error(f"提取聊天记录失败: {e}")
@@ -2170,13 +2271,21 @@ class LocalReminiscencePlugin(Star):
                 logger.error(f"[APLR] 自动向量化失败: {ve}")
 
             # 构建回复
-            yield event.plain_result(f"✨ {date_str} 的回忆整理好啦！\n\n")
-            resp = f"💭 我的感悟：{summary.daily_reflection}\n"
-            resp += f"📍 我记下了 {len(summary.events)} 个印象深刻的瞬间。"
-            yield event.plain_result(resp)
+            if event:
+                yield event.plain_result(f"✨ {date_str} 的回忆整理好啦！\n\n")
+                resp = f"💭 我的感悟：{summary.daily_reflection}\n"
+                resp += f"📍 我记下了 {len(summary.events)} 个印象深刻的瞬间。"
+                yield event.plain_result(resp)
+            else:
+                logger.info(f"[APLR] ✨ {date_str} 的回忆自动整理好了！")
+                logger.info(f"[APLR] 我的感悟：{summary.daily_reflection}")
+                logger.info(f"[APLR] 我记下了 {len(summary.events)} 个印象深刻的瞬间。")
         except Exception as e:
             logger.exception("存入数据库失败")
-            yield event.plain_result(f"[APLR] 虽然想起来了，但没能存进记忆库：{e}")
+            if event:
+                yield event.plain_result(f"[APLR] 虽然想起来了，但没能存进记忆库：{e}")
+            else:
+                logger.error(f"[APLR] 自动重整回忆任务存入数据库失败: {e}")
 
     @filter.command("memory_consolidation")
     @filter.permission_type(filter.PermissionType.ADMIN)
