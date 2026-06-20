@@ -172,6 +172,20 @@ class DailySummarizer:
         if not all_events and not all_reflections:
             return None
 
+        # 强制纠错与编号重建机制（解决 LLM 容易用明日日期错标、或编号断层、不连续、甚至不规范等问题）
+        if all_events:
+            clean_date_sub = date_str.replace('-', '')
+            for idx, ev in enumerate(all_events):
+                correct_id = f"evt_{clean_date_sub}_{idx + 1:03d}"
+                if isinstance(ev, dict):
+                    ev["event_id"] = correct_id
+                else:
+                    try:
+                        setattr(ev, "event_id", correct_id)
+                    except Exception:
+                        pass
+            logger.debug(f"[APLR] 已对今日的 {len(all_events)} 个事件强制进行规范化编号重整（日期: {date_str}）。")
+
         # --- 整合心得 (如果分了多段) ---
         final_reflection = ""
         if len(all_reflections) == 1:
