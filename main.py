@@ -974,17 +974,29 @@ class LocalReminiscencePlugin(Star):
             if not records:
                 return
                 
-            # Get provider request containing the conversation object
-            req = event.get_extra("provider_request")
-            if not req or not req.conversation:
+            umo = getattr(event, 'unified_msg_origin', None)
+            if not umo:
+                logger.warning("[APLR] 无法获取 cron job 事件的消息来源，跳过插入官方聊天记录")
+                return
+                
+            conv_mgr = self.context.conversation_manager
+            session_curr_cid = await conv_mgr.get_curr_conversation_id(umo)
+            if not session_curr_cid:
+                session_curr_cid = await conv_mgr.new_conversation(umo)
+                
+            conv = await conv_mgr.get_conversation(umo, session_curr_cid)
+            if not conv:
+                logger.warning(f"[APLR] 无法获取或创建 cron job 对应的会话: {session_curr_cid}")
                 return
                 
             # Load the current history
             history = []
-            try:
-                history = json.loads(req.conversation.history or "[]")
-            except Exception as exc:
-                logger.warning(f"[APLR] 无法解析会话历史: {exc}")
+            if conv.history:
+                try:
+                    history = json.loads(conv.history)
+                except Exception as exc:
+                    logger.warning(f"[APLR] 无法解析官方会话 {conv.cid} 历史: {exc}")
+                    history = []
                 
             # Append each record to history
             for record in records:
@@ -993,9 +1005,13 @@ class LocalReminiscencePlugin(Star):
                     "content": record["content"]
                 })
                 
-            # Update the memory conversation object history, so persist_agent_history will serialize it
-            req.conversation.history = json.dumps(history)
-            logger.info(f"[APLR] 成功将 {len(records)} 条 Cron Job 完整交互记录写入 {req.conversation.cid} 内存历史")
+            # Update the official conversation store
+            await conv_mgr.update_conversation(
+                unified_msg_origin=umo,
+                conversation_id=conv.cid,
+                history=history
+            )
+            logger.info(f"[APLR] 成功将 {len(records)} 条 Cron Job 完整交互记录写入 {conv.cid} 官方聊天记录数据库")
         except Exception as e:
             logger.error(f"[APLR] 将 Cron Job 完整交互日志写入自带聊天记录失败: {e}", exc_info=True)
 
