@@ -161,15 +161,21 @@
     "hint": "配置自定义的一天开始时刻，以及是否在此时间点之后自动触发每日总结。",
     "items": {
       "boundary_cron": {
-        "description": "日期分割时间 (Cron 格式)",
+        "description": "日期分割时间 (Cron 格式，本地时区)",
         "type": "string",
         "hint": "形如 '0 4 * * *' (代表凌晨 4:00)，这必须是一个每天只执行一次的 cron 时间点。整理/记录聊天记录时，以此时间作为新一天的分割处。",
-        "default": "0 4 * * *"
+        "default": "55 23 * * *"
       },
       "auto_summary_enabled": {
         "description": "是否开启自动每日总结",
         "type": "bool",
         "hint": "开启后，系统将在用户定义的时间点 +1 分钟时自动执行每日总结。",
+        "default": false
+      },
+      "auto_end_session": {
+        "description": "是否自动结束/重置上下文会话",
+        "type": "bool",
+        "hint": "开启后，系统将在用户定义的分界时刻 (boundary_cron) +9 分钟时自动关闭/清空所有激活中的会话历史，让第二天从全新上下文空对话开始，防止记忆臃肿。",
         "default": false
       }
     }

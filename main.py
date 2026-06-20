@@ -23,7 +23,7 @@ import subprocess
 import sys
 import numpy as np
 
-@register("local_reminiscence", "olozhika", "基于定时总结和向量化的本地记忆插件", "1.2.2")
+@register("local_reminiscence", "olozhika", "基于定时总结和向量化的本地记忆插件", "1.3.5")
 class LocalReminiscencePlugin(Star):
     def __init__(self, context: Context, config: any = None):
         super().__init__(context)
@@ -194,33 +194,95 @@ class LocalReminiscencePlugin(Star):
         return 0 <= diff < 10
 
     async def _auto_summary_check_loop(self):
-        """自动每日总结触发检测循环（每分钟检查一次）"""
+        """自动后台任务（每日总结和会话结束重置）触发检测循环（每分钟检查一次）"""
         while True:
             try:
                 await asyncio.sleep(60)
                 
                 # 读取配置
                 boundary_conf = self.config.get("day_boundary_config", {})
-                if not boundary_conf.get("auto_summary_enabled", False):
+                auto_summary = boundary_conf.get("auto_summary_enabled", False)
+                auto_end = boundary_conf.get("auto_end_session", False)
+                if not auto_summary and not auto_end:
                     continue
                 
                 boundary_cron = boundary_conf.get("boundary_cron", "0 4 * * *")
                 h, m = self._parse_cron_time(boundary_cron)
-                
-                # 计算 +1 分钟的时间
-                target_h = h
-                target_m = m + 1
-                if target_m >= 60:
-                    target_m %= 60
-                    target_h = (target_h + 1) % 24
-                
                 now = datetime.now()
-                if now.hour == target_h and now.minute == target_m:
-                    logger.info(f"[APLR] 触发自动每日总结：当前时间符合{boundary_cron} + 1min 时间点 ({target_h:02d}:{target_m:02d})")
-                    target_date = self._get_completed_logical_date()
-                    await self._run_automatic_daily_summary(target_date)
+                
+                # 1. 自动每日总结 (+1 分钟)
+                if auto_summary:
+                    target_h = h
+                    target_m = m + 1
+                    if target_m >= 60:
+                        target_m %= 60
+                        target_h = (target_h + 1) % 24
+                    
+                    if now.hour == target_h and now.minute == target_m:
+                        logger.info(f"[APLR] 触发自动每日总结：当前时间符合{boundary_cron} + 1min 时间点 ({target_h:02d}:{target_m:02d})")
+                        target_date = self._get_completed_logical_date()
+                        await self._run_automatic_daily_summary(target_date)
+                
+                # 2. 自动关闭所有激活会话 (+9 分钟)
+                if auto_end:
+                    target_h = h
+                    target_m = m + 9
+                    if target_m >= 60:
+                        target_m %= 60
+                        target_h = (target_h + 1) % 24
+                    
+                    if now.hour == target_h and now.minute == target_m:
+                        logger.info(f"[APLR] 触发自动结束/重置上下文会话：当前时间符合{boundary_cron} + 9min 时间点 ({target_h:02d}:{target_m:02d})")
+                        await self._close_all_active_sessions()
             except Exception as e:
-                logger.error(f"[APLR] 自动每日总结检测任务异常: {e}")
+                logger.error(f"[APLR] 自动后台任务检测循环发生异常: {e}")
+
+    async def _close_all_active_sessions(self):
+        """关闭/重置所有当前有记录的活页 Session (通过清空内存缓存和 sel_conv_id 实现下一次说话自动切换新会话)"""
+        logger.info("[APLR] 自动结束/重置所有激活中的对话上下文任务开始运行...")
+        try:
+            from astrbot.core import sp
+            from astrbot.core.utils.active_event_registry import active_event_registry
+            
+            conv_mgr = self.context.conversation_manager
+            
+            # 1. 搜集所有当前的会话 UMO (除了拉取 DB, 也需要包含内存中那些未同步或在活动中的 session)
+            convs, total = await conv_mgr.db.get_all_conversations(page=1, page_size=2000)
+            
+            # 使用集合去重
+            umos = {conv.user_id for conv in convs if conv.user_id}
+            
+            # 把内存中 session_conversations 里的 session UMO 也合并进来
+            for umo in list(conv_mgr.session_conversations.keys()):
+                umos.add(umo)
+                
+            closed_count = 0
+            for umo in umos:
+                if not umo:
+                    continue
+                
+                # 获取当前的对话 ID 并进行状态验证
+                curr_cid = await conv_mgr.get_curr_conversation_id(umo)
+                if not curr_cid:
+                    continue
+                
+                # 查询当前对话的详细内容，只有存在内容(不为空)的活跃会话才会被处理重置
+                conv = await conv_mgr.db.get_conversation_by_id(curr_cid)
+                if conv and conv.content and len(conv.content) > 0:
+                    # 停止对该 UMO 正在后台运行的所有事件
+                    active_event_registry.request_agent_stop_all(umo)
+                    
+                    # 关键操作：清除内存对该 UMO 当前 selected 对话的缓存指向
+                    conv_mgr.session_conversations.pop(umo, None)
+                    
+                    # 关键操作：移去偏好设置，切断关联。下次说话触发 _get_session_conv 会由于 get_curr_conversation_id(umo) 为空而触发全新 new_conversation
+                    await sp.session_remove(umo, "sel_conv_id")
+                    
+                    closed_count += 1
+                    
+            logger.info(f"[APLR] 自动结束/重置所有旧会话上下文执行完毕。共安全移除了 {closed_count} 个活跃会话的当前指针 (历史数据完好保留在数据库中)。")
+        except Exception as e:
+            logger.error(f"[APLR] 自动结束/重置所有会话上下文时发生异常: {e}", exc_info=True)
 
     async def _run_automatic_daily_summary(self, target_date: str):
         logger.info(f"[APLR] 开始执行自动每日总结，日期: {target_date}")
@@ -537,27 +599,89 @@ class LocalReminiscencePlugin(Star):
                     req.system_prompt += memory_text
                     logger.info(f"[APLR] 检测到新对话开启，已为会话注入历史记忆，长度: {len(memory_text)}")
 
-            # 0. 提取当前用户的 Nickname (增强版逻辑)
+            # 0. 提取当前用户的 Nickname 与群名称 Group Name (增强版多路融合提取逻辑)
             current_nickname = None
+            current_group_name = None
             
-            # 策略 A: 尝试从标签中提取
-            tag_match = re.search(r'<system_reminder>(.*?)</system_reminder>', message_str, re.IGNORECASE | re.DOTALL)
-            if tag_match:
-                tag_content = tag_match.group(1)
-                nick_match = re.search(r'Nickname:\s*([^,\s]+)', tag_content, re.IGNORECASE)
-                if nick_match:
-                    current_nickname = nick_match.group(1).strip()
-                    logger.debug(f"[APLR] 从标签中成功提取 Nickname: {current_nickname}")
+            actual_event = getattr(event, 'event', event)
+            message_obj = getattr(actual_event, 'message_obj', None)
             
-            # 策略 B: 兜底方案，如果标签提取失败，直接全文搜索关键词
-            if not current_nickname:
-                nick_match = re.search(r'Nickname:\s*([^,\s]+)', message_str, re.IGNORECASE)
-                if nick_match:
-                    current_nickname = nick_match.group(1).strip()
-                    logger.debug(f"[APLR] 标签提取失败，通过全文搜索提取 Nickname: {current_nickname}")
-            
+            # 路径 A：优先从 AstrBot 原生的 message_obj 中直接提取其内存化实体属性（极度精准，杜绝文本正则表达式的失误）
+            if message_obj:
+                sender = getattr(message_obj, 'sender', None)
+                if sender:
+                    for attr in ['nickname', 'card', 'name']:
+                        val = getattr(sender, attr, None)
+                        if val and str(val).strip():
+                            current_nickname = str(val).strip()
+                            break
+                    if not current_nickname and hasattr(sender, 'user_id'):
+                        current_nickname = str(sender.user_id).strip()
+                        
+                group = getattr(message_obj, 'group', None)
+                if group and hasattr(group, 'group_name'):
+                    g_name = getattr(group, 'group_name', None)
+                    if g_name and str(g_name).strip():
+                        current_group_name = str(g_name).strip()
+
+            # 路径 B：辅助/兜底，多阶全文扫描含有 <system_reminder> 标签或普通结构文本的字段
+            texts_to_search = []
+            if message_str:
+                texts_to_search.append(message_str)
+                
+            if req:
+                # 扫描 extra_user_content_parts
+                extra_parts = getattr(req, 'extra_user_content_parts', [])
+                if isinstance(extra_parts, list):
+                    for part in extra_parts:
+                        part_text = getattr(part, 'text', '') or (part.get('text', '') if isinstance(part, dict) else '')
+                        if part_text:
+                            texts_to_search.append(part_text)
+                
+                # 扫描 user_content_parts
+                user_parts = getattr(req, 'user_content_parts', [])
+                if isinstance(user_parts, list):
+                    for part in user_parts:
+                        part_text = getattr(part, 'text', '') or (part.get('text', '') if isinstance(part, dict) else '')
+                        if part_text:
+                            texts_to_search.append(part_text)
+
+            # 解析并提取
+            for text_val in texts_to_search:
+                if not isinstance(text_val, str):
+                    continue
+                tag_match = re.search(r'<system_reminder>(.*?)</system_reminder>', text_val, re.IGNORECASE | re.DOTALL)
+                if tag_match:
+                    tag_content = tag_match.group(1)
+                    if not current_nickname:
+                        nick_match = re.search(r'Nickname:\s*([^\n\r,<>]+)', tag_content, re.IGNORECASE)
+                        if nick_match:
+                            current_nickname = nick_match.group(1).strip()
+                            logger.debug(f"[APLR] 从标签中提取 Nickname 成功: {current_nickname}")
+                    if not current_group_name:
+                        group_match = re.search(r'Group name:\s*([^\n\r,<>]+)', tag_content, re.IGNORECASE)
+                        if group_match:
+                            current_group_name = group_match.group(1).strip()
+                            logger.debug(f"[APLR] 从标签中提取 Group Name 成功: {current_group_name}")
+
+                # 全文正则表达式兜底（防止未包裹在 system_reminder 标签中）
+                if not current_nickname:
+                    nick_match = re.search(r'Nickname:\s*([^\n\r,<>]+)', text_val, re.IGNORECASE)
+                    if nick_match:
+                        current_nickname = nick_match.group(1).strip()
+                if not current_group_name:
+                    group_match = re.search(r'Group name:\s*([^\n\r,<>]+)', text_val, re.IGNORECASE)
+                    if group_match:
+                        current_group_name = group_match.group(1).strip()
+
             if not current_nickname:
                 logger.debug(f"[APLR] 无法从消息中提取 Nickname")
+            else:
+                logger.info(f"[APLR] 融合模块提取的当前对话用户昵称: {current_nickname}")
+            if not current_group_name:
+                logger.debug(f"[APLR] 无法从消息中提取 Group Name")
+            else:
+                logger.info(f"[APLR] 融合模块提取的当前对话群聊名称: {current_group_name}")
             
             # 清理消息内容（去除系统提示词部分，避免干扰检索）
             clean_message = re.sub(r'<system_reminder>.*?</system_reminder>', '', message_str, flags=re.DOTALL).strip()
@@ -574,6 +698,25 @@ class LocalReminiscencePlugin(Star):
             if current_nickname:
                 logger.debug(f"[APLR] 正在搜索用户节点: {current_nickname}")
                 user_nodes = self.db.search_nodes(current_nickname, limit=1, include_description=False)
+                
+                # 双向/逆向模糊匹配备用方案：如果正面查找未中，尝试在数据库中寻找其名称被包含于 current_nickname 中的节点
+                if not user_nodes:
+                    try:
+                        with self.db._get_conn() as conn:
+                            cursor = conn.cursor()
+                            cursor.execute("""
+                                SELECT * FROM nodes 
+                                WHERE LENGTH(name) >= 2 AND ? LIKE '%' || LOWER(name) || '%'
+                                ORDER BY LENGTH(name) DESC, last_updated DESC
+                                LIMIT 1
+                            """, (current_nickname.lower(),))
+                            row = cursor.fetchone()
+                            if row:
+                                user_nodes = [dict(row)]
+                                logger.debug(f"[APLR] 触发逆向匹配，找到用户节点: {user_nodes[0]['name']}")
+                    except Exception as e:
+                        logger.warning(f"[APLR] 搜索用户节点逆向匹配时出错: {e}")
+
                 if user_nodes:
                     node = user_nodes[0]
                     logger.debug(f"[APLR] 找到用户节点: {node['name']} (ID: {node['id']})")
@@ -582,6 +725,39 @@ class LocalReminiscencePlugin(Star):
                     seen_names.add(node['name'])
                 else:
                     logger.debug(f"[APLR] 未找到用户节点: {current_nickname}")
+
+            # 其次尝试获取群聊空间节点
+            if current_group_name:
+                logger.debug(f"[APLR] 正在搜索群聊节点: {current_group_name}")
+                group_nodes = self.db.search_nodes(current_group_name, limit=1, include_description=False)
+                
+                # 双向/逆向模糊匹配备用方案：如果正面查找未中，尝试在数据库中寻找其名称被包含于 current_group_name 中的节点
+                if not group_nodes:
+                    try:
+                        with self.db._get_conn() as conn:
+                            cursor = conn.cursor()
+                            cursor.execute("""
+                                SELECT * FROM nodes 
+                                WHERE LENGTH(name) >= 2 AND ? LIKE '%' || LOWER(name) || '%'
+                                ORDER BY LENGTH(name) DESC, last_updated DESC
+                                LIMIT 1
+                            """, (current_group_name.lower(),))
+                            row = cursor.fetchone()
+                            if row:
+                                group_nodes = [dict(row)]
+                                logger.debug(f"[APLR] 触发逆向匹配，找到群聊节点: {group_nodes[0]['name']}")
+                    except Exception as e:
+                        logger.warning(f"[APLR] 搜索群聊节点逆向匹配时出错: {e}")
+
+                if group_nodes:
+                    node = group_nodes[0]
+                    if node['name'] not in seen_names:
+                        logger.debug(f"[APLR] 找到群聊节点: {node['name']} (ID: {node['id']})")
+                        node['is_group'] = True # 标记为当前群聊空间
+                        all_nodes.append(node)
+                        seen_names.add(node['name'])
+                else:
+                    logger.debug(f"[APLR] 未找到群聊节点: {current_group_name}")
 
             # 获取消息相关的节点
             msg_nodes, _ = await self._get_nodes_context(message_str, include_description=False, limit_per_kw=1)
@@ -2043,8 +2219,29 @@ class LocalReminiscencePlugin(Star):
                         current_chunk = []
                         current_size = 0.0
 
-                    # 添加用户 ID 标识头
-                    header = f"\n=== 对话记录 ({target_user_id}) ===\n"
+                    # 添加包含详细场景元数据的对话提示头，精准指导AI
+                    meta = data.get("metadata", {})
+                    g_name = meta.get("group_name")
+                    n_name = meta.get("nickname")
+                    c_type = meta.get("chat_type")
+                    
+                    # Session ID 判定做双重加固
+                    is_group_by_session = "GroupMessage" in (target_user_id or "")
+                    is_friend_by_session = "FriendMessage" in (target_user_id or "")
+                    specific_id = target_user_id.split(":")[-1] if target_user_id and ":" in target_user_id else (target_user_id or "")
+
+                    if g_name:
+                        info_str = f"群聊：{g_name}"
+                    elif n_name:
+                        info_str = f"与 {n_name} 的私聊"
+                    elif c_type == "group" or is_group_by_session:
+                        info_str = f"群聊 (ID: {specific_id})"
+                    elif c_type == "private" or is_friend_by_session:
+                        info_str = f"私聊 (ID: {specific_id})"
+                    else:
+                        info_str = f"私聊：{target_user_id}"
+
+                    header = f"\n=== 对话场景: [{info_str}] (会话ID: {target_user_id}) ===\n"
                     header_size = len(header.encode('utf-8')) / 1024.0
                     current_chunk.append(header)
                     current_size += header_size
@@ -2067,7 +2264,7 @@ class LocalReminiscencePlugin(Star):
                         # 核心逻辑：如果是小文件，则绝对不在此循环内切分（即挤一挤，不分段）
                         if not is_small_file and len(current_chunk) > 2 and (current_size + msg_size > max_kb) and time_gap_exceeded:
                             conversation_chunks.append("".join(current_chunk))
-                            current_chunk = [f"\n=== 对话记录 ({target_user_id}) (续) ===\n"]
+                            current_chunk = [f"\n=== 对话场景: [{info_str}] (会话ID: {target_user_id}) (续) ===\n"]
                             current_size = len(current_chunk[0].encode('utf-8')) / 1024.0
                         
                         current_chunk.append(msg_text)
