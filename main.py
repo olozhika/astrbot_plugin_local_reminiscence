@@ -23,7 +23,7 @@ import subprocess
 import sys
 import numpy as np
 
-@register("local_reminiscence", "olozhika", "基于定时总结和向量化的本地记忆插件", "1.3.5")
+@register("local_reminiscence", "olozhika", "基于定时总结和向量化的本地记忆插件", "1.2.2")
 class LocalReminiscencePlugin(Star):
     def __init__(self, context: Context, config: any = None):
         super().__init__(context)
@@ -343,6 +343,11 @@ class LocalReminiscencePlugin(Star):
                     db_user_ids = [row[0] for row in cursor.fetchall() if row[0]]
                     conn.close()
                     for db_uid in db_user_ids:
+                        # 为了避免带有冒号的真正 ID 与从文件名解析的下划线 ID 重复，
+                        # 如果发现它的规范化下划线版本已在列表中，先将其移除，然后追加带冒号的真实 ID
+                        db_safe = db_uid.replace(":", "_")
+                        if db_safe in effective_user_ids:
+                            effective_user_ids.remove(db_safe)
                         if db_uid not in effective_user_ids:
                             effective_user_ids.append(db_uid)
             except Exception as e:
