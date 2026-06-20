@@ -15,6 +15,7 @@ A lightweight local memory plugin for AstrBot that uses local embedding models a
 2. 优化自动实时读聊天记录的方式
 3. 记忆节点唤起时增加了对于群聊名称的额外唤起，让AI更了解自己在哪里聊天
 4. 优化每日总结给予AI聊天记录时对于当前session的描述（现在AI会额外知道群名）
+5. 插件设置`目标会话 ID 列表`如果写`all`将会在每日总结环节中使用所有session的聊天记录
 
 #### 老用户升级
 
