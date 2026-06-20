@@ -25,6 +25,10 @@ import numpy as np
 
 @register("local_reminiscence", "olozhika", "基于定时总结和向量化的本地记忆插件", "1.2.2")
 class LocalReminiscencePlugin(Star):
+    _bg_tasks = []
+    _last_summary_run_time = None
+    _last_close_run_time = None
+
     def __init__(self, context: Context, config: any = None):
         super().__init__(context)
         self.context = context
@@ -134,9 +138,16 @@ class LocalReminiscencePlugin(Star):
             idle_timeout=self.config.get("model_idle_timeout", -1)
         )
         
-        # 启动背景检测任务
-        asyncio.create_task(self._model_idle_check_loop())
-        asyncio.create_task(self._auto_summary_check_loop())
+        # 启动背景检测任务并且管理旧任务防止热重载重复运行
+        while self.__class__._bg_tasks:
+            old_task = self.__class__._bg_tasks.pop()
+            if not old_task.done():
+                old_task.cancel()
+                logger.debug(f"[APLR] 已取消热重载前的旧后台任务: {old_task.get_name() if hasattr(old_task, 'get_name') else old_task}")
+
+        t1 = asyncio.create_task(self._model_idle_check_loop(), name="APLR_model_idle_check")
+        t2 = asyncio.create_task(self._auto_summary_check_loop(), name="APLR_auto_summary_check")
+        self.__class__._bg_tasks.extend([t1, t2])
         
         # 延迟初始化固化器，因为需要 LLM 函数
         self.consolidator = None
@@ -219,9 +230,12 @@ class LocalReminiscencePlugin(Star):
                         target_h = (target_h + 1) % 24
                     
                     if now.hour == target_h and now.minute == target_m:
-                        logger.info(f"[APLR] 触发自动每日总结：当前时间符合{boundary_cron} + 1min 时间点 ({target_h:02d}:{target_m:02d})")
-                        target_date = self._get_completed_logical_date()
-                        await self._run_automatic_daily_summary(target_date)
+                        current_trigger_key = (now.date(), target_h, target_m)
+                        if self.__class__._last_summary_run_time != current_trigger_key:
+                            self.__class__._last_summary_run_time = current_trigger_key
+                            logger.info(f"[APLR] 触发自动每日总结：当前时间符合{boundary_cron} + 1min 时间点 ({target_h:02d}:{target_m:02d})")
+                            target_date = self._get_completed_logical_date()
+                            await self._run_automatic_daily_summary(target_date)
                 
                 # 2. 自动关闭所有激活会话 (+9 分钟)
                 if auto_end:
@@ -232,8 +246,11 @@ class LocalReminiscencePlugin(Star):
                         target_h = (target_h + 1) % 24
                     
                     if now.hour == target_h and now.minute == target_m:
-                        logger.info(f"[APLR] 触发自动结束/重置上下文会话：当前时间符合{boundary_cron} + 9min 时间点 ({target_h:02d}:{target_m:02d})")
-                        await self._close_all_active_sessions()
+                        current_trigger_key = (now.date(), target_h, target_m)
+                        if self.__class__._last_close_run_time != current_trigger_key:
+                            self.__class__._last_close_run_time = current_trigger_key
+                            logger.info(f"[APLR] 触发自动结束/重置上下文会话：当前时间符合{boundary_cron} + 9min 时间点 ({target_h:02d}:{target_m:02d})")
+                            await self._close_all_active_sessions()
             except Exception as e:
                 logger.error(f"[APLR] 自动后台任务检测循环发生异常: {e}")
 
@@ -246,11 +263,31 @@ class LocalReminiscencePlugin(Star):
             
             conv_mgr = self.context.conversation_manager
             
+            # Helper to robustly extract properties regardless of object structure (dict, obj, tuple)
+            def get_val(obj, attr_name, default=None):
+                if obj is None:
+                    return default
+                if isinstance(obj, dict):
+                    return obj.get(attr_name, default)
+                if hasattr(obj, attr_name):
+                    return getattr(obj, attr_name, default)
+                if isinstance(obj, (tuple, list)):
+                    if len(obj) == 1:
+                        return get_val(obj[0], attr_name, default)
+                    cols = ["user_id", "cid", "created_at", "updated_at", "title", "persona_id"]
+                    if attr_name in cols and len(obj) == len(cols):
+                        return obj[cols.index(attr_name)]
+                return default
+
             # 1. 搜集所有当前的会话 UMO (除了拉取 DB, 也需要包含内存中那些未同步或在活动中的 session)
-            convs, total = await conv_mgr.db.get_all_conversations(page=1, page_size=2000)
+            res = await conv_mgr.db.get_all_conversations(page=1, page_size=2000)
+            if isinstance(res, tuple):
+                convs = res[0]
+            else:
+                convs = res
             
             # 使用集合去重
-            umos = {conv.user_id for conv in convs if conv.user_id}
+            umos = {get_val(conv, "user_id") for conv in convs if get_val(conv, "user_id")}
             
             # 把内存中 session_conversations 里的 session UMO 也合并进来
             for umo in list(conv_mgr.session_conversations.keys()):
@@ -268,7 +305,8 @@ class LocalReminiscencePlugin(Star):
                 
                 # 查询当前对话的详细内容，只有存在内容(不为空)的活跃会话才会被处理重置
                 conv = await conv_mgr.db.get_conversation_by_id(curr_cid)
-                if conv and conv.content and len(conv.content) > 0:
+                conv_content = get_val(conv, "content")
+                if conv and conv_content and len(conv_content) > 0:
                     # 停止对该 UMO 正在后台运行的所有事件
                     active_event_registry.request_agent_stop_all(umo)
                     
@@ -2327,8 +2365,19 @@ class LocalReminiscencePlugin(Star):
         # --- 获取 LLM 提供者并初始化总结器 (新版推荐方式) ---
         try:
             # 1. 获取当前会话的 provider ID
-            umo = event.unified_msg_origin
-            provider_id = await self.context.get_current_chat_provider_id(umo=umo)
+            umo = event.unified_msg_origin if event else None
+            provider_id = None
+            if umo:
+                provider_id = await self.context.get_current_chat_provider_id(umo=umo)
+            
+            # 如果没有 UMO 或 get_current_chat_provider_id 返回 None，尝试获取默认正在使用的提供者 ID
+            if not provider_id:
+                try:
+                    default_provider = self.context.get_using_provider(umo=umo) or self.context.get_using_provider()
+                    if default_provider:
+                        provider_id = default_provider.meta().id
+                except Exception as e:
+                    logger.warning(f"[APLR] 无法通过 get_using_provider 获取默认 LLM ID: {e}")
             
             if not provider_id:
                 logger.info("[APLR] 暂时连接不到大脑（LLM Provider），请检查配置。")
@@ -2349,7 +2398,7 @@ class LocalReminiscencePlugin(Star):
 
             # 注入 Astrbot 自带的人格提示词
             try:
-                persona = await self.context.persona_manager.get_default_persona_v3(umo=umo)
+                persona = await self.context.persona_manager.get_default_persona_v3(umo=umo) if umo else None
                 if persona and persona.get('prompt'):
                     base_system_prompt = (persona['prompt'] + "\n" + base_system_prompt) if base_system_prompt else (persona['prompt'] + "\n")
                     logger.debug(f"[APLR] 已成功注入 Astrbot 自带的人格设定 (Persona: {persona.get('name', 'Unknown')})")
