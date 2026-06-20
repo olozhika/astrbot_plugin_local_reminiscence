@@ -28,6 +28,7 @@ class LocalReminiscencePlugin(Star):
     _bg_tasks = []
     _last_summary_run_time = None
     _last_close_run_time = None
+    _active_cron_records = {}
 
     def __init__(self, context: Context, config: any = None):
         super().__init__(context)
@@ -397,9 +398,21 @@ class LocalReminiscencePlugin(Star):
         else:
             return target_list
 
-    def _append_to_realtime_log(self, unified_id: str, role: str, content: str):
+    def _append_to_realtime_log(self, unified_id: str, role: str, content: str, event: any = None):
         """将消息追加到实时日志文件 (JSON)"""
         try:
+            if event:
+                actual_event = getattr(event, 'event', event)
+                is_cron = (actual_event.__class__.__name__ == "CronMessageEvent")
+                if is_cron and self.config.get("day_boundary_config", {}).get("insert_cron_to_chat_history", False):
+                    cron_key = id(actual_event)
+                    if cron_key not in self.__class__._active_cron_records:
+                        self.__class__._active_cron_records[cron_key] = []
+                    self.__class__._active_cron_records[cron_key].append({
+                        "role": "user" if role not in ["assistant", self.ai_name] else "assistant",
+                        "content": content if role not in ["assistant", self.ai_name] else f"{role}: {content}"
+                    })
+
             if not self.config.get("realtime_recording", False):
                 return
             
@@ -524,13 +537,18 @@ class LocalReminiscencePlugin(Star):
         # 记录用户消息（实时记录模式）
         try:
             unified_id = self._get_unified_id(event) or "system"
-            if self.config.get("realtime_recording", False):
+            actual_event = getattr(event, 'event', event)
+            is_cron = (actual_event.__class__.__name__ == "CronMessageEvent") if event else False
+            
+            is_realtime_enabled = self.config.get("realtime_recording", False)
+            is_cron_history_enabled = self.config.get("day_boundary_config", {}).get("insert_cron_to_chat_history", False)
+            
+            if is_realtime_enabled or (is_cron_history_enabled and is_cron):
                 if self._is_session_matching(unified_id):
-                    actual_event = getattr(event, 'event', event)
                     nickname = self._get_sender_nickname(event)
                     text = actual_event.get_plain_text() if hasattr(actual_event, 'get_plain_text') else getattr(actual_event, 'message_str', '')
                     if text:
-                        self._append_to_realtime_log(unified_id, nickname, text)
+                        self._append_to_realtime_log(unified_id, nickname, text, event=event)
         except Exception as e:
             logger.error(f"[APLR] 实时记录用户消息异常 (不影响聊天): {e}")
         
@@ -884,11 +902,17 @@ class LocalReminiscencePlugin(Star):
     async def on_llm_response(self, event: any, *args, **kwargs):
         """记录 AI 的回复（实时模式）"""
         try:
-            if not self.config.get("realtime_recording", False):
-                return
-            
             if not event:
                 return
+            actual_event = getattr(event, 'event', event)
+            is_cron = (actual_event.__class__.__name__ == "CronMessageEvent") if event else False
+            
+            is_realtime_enabled = self.config.get("realtime_recording", False)
+            is_cron_history_enabled = self.config.get("day_boundary_config", {}).get("insert_cron_to_chat_history", False)
+            
+            if not (is_realtime_enabled or (is_cron_history_enabled and is_cron)):
+                return
+            
             unified_id = self._get_unified_id(event) or "system"
             if not self._is_session_matching(unified_id):
                 return
@@ -900,10 +924,7 @@ class LocalReminiscencePlugin(Star):
             if not resp:
                 return
             
-            actual_event = getattr(event, 'event', event)
-            is_cron = (actual_event.__class__.__name__ == "CronMessageEvent")
-            
-            # 尝试提取思考过程 (支持标准 reasoning_content 属性，以及一些带有思考的 extra 思考)
+            # 尝试提取思考过程 (支持 standard reasoning_content 属性，以及一些带有思考的 extra 思考)
             think_content = ""
             if hasattr(resp, 'reasoning_content') and resp.reasoning_content:
                 think_content = resp.reasoning_content
@@ -914,16 +935,16 @@ class LocalReminiscencePlugin(Star):
             if is_cron:
                 # 3. 对于cron job中的AI说话和reasoning_content其实都是思考，在这种情况下可以把reasoning_content记作深层思考，其他内容记做浅层思考
                 if think_content:
-                    self._append_to_realtime_log(unified_id, ai_name, f"(深层思考: {think_content.strip()})")
+                    self._append_to_realtime_log(unified_id, ai_name, f"(深层思考: {think_content.strip()})", event=event)
                 
                 text = getattr(resp, 'completion_text', '')
                 if text:
                     text = text.strip()
                     if text and not text.startswith("I finished this job"):
-                        self._append_to_realtime_log(unified_id, ai_name, f"(浅层思考: {text})")
+                        self._append_to_realtime_log(unified_id, ai_name, f"(浅层思考: {text})", event=event)
             else:
                 if think_content:
-                    self._append_to_realtime_log(unified_id, ai_name, f"(思考: {think_content.strip()})")
+                    self._append_to_realtime_log(unified_id, ai_name, f"(思考: {think_content.strip()})", event=event)
                 
                 # 记录主干回复
                 text = getattr(resp, 'completion_text', '')
@@ -931,19 +952,68 @@ class LocalReminiscencePlugin(Star):
                     text = text.strip()
                     # 过滤掉 APLR 内部可能产生的空回复或标记
                     if text and not text.startswith("I finished this job"):
-                        self._append_to_realtime_log(unified_id, ai_name, text)
+                        self._append_to_realtime_log(unified_id, ai_name, text, event=event)
         except Exception as e:
             logger.error(f"[APLR] 实时记录 AI 回复异常 (不影响聊天): {e}")
+
+    @filter.on_agent_done()
+    async def on_agent_done(self, event: any, run_context: any, response: any, *args, **kwargs):
+        """当 Agent 运行完成后，如果开启了在 cron job 结束时将完整交互记录写入自带聊天记录，则进行处理"""
+        try:
+            if not self.config.get("day_boundary_config", {}).get("insert_cron_to_chat_history", False):
+                return
+            
+            actual_event = getattr(event, 'event', event)
+            is_cron = (actual_event.__class__.__name__ == "CronMessageEvent")
+            if not is_cron:
+                return
+                
+            cron_key = id(actual_event)
+            # Fetch accumulated records for this cron job
+            records = self.__class__._active_cron_records.pop(cron_key, [])
+            if not records:
+                return
+                
+            # Get provider request containing the conversation object
+            req = event.get_extra("provider_request")
+            if not req or not req.conversation:
+                return
+                
+            # Load the current history
+            history = []
+            try:
+                history = json.loads(req.conversation.history or "[]")
+            except Exception as exc:
+                logger.warning(f"[APLR] 无法解析会话历史: {exc}")
+                
+            # Append each record to history
+            for record in records:
+                history.append({
+                    "role": record["role"],
+                    "content": record["content"]
+                })
+                
+            # Update the memory conversation object history, so persist_agent_history will serialize it
+            req.conversation.history = json.dumps(history)
+            logger.info(f"[APLR] 成功将 {len(records)} 条 Cron Job 完整交互记录写入 {req.conversation.cid} 内存历史")
+        except Exception as e:
+            logger.error(f"[APLR] 将 Cron Job 完整交互日志写入自带聊天记录失败: {e}", exc_info=True)
 
     @filter.on_llm_tool_respond()
     async def on_llm_tool_respond(self, event: any, *args, **kwargs):
         """记录工具调用活动（实时模式）"""
         try:
-            if not self.config.get("realtime_recording", False):
-                return
-            
             if not event:
                 return
+            actual_event = getattr(event, 'event', event)
+            is_cron = (actual_event.__class__.__name__ == "CronMessageEvent") if event else False
+            
+            is_realtime_enabled = self.config.get("realtime_recording", False)
+            is_cron_history_enabled = self.config.get("day_boundary_config", {}).get("insert_cron_to_chat_history", False)
+            
+            if not (is_realtime_enabled or (is_cron_history_enabled and is_cron)):
+                return
+            
             unified_id = self._get_unified_id(event) or "system"
             if not self._is_session_matching(unified_id):
                 return
@@ -970,7 +1040,7 @@ class LocalReminiscencePlugin(Star):
             if len(args_str) > 200:
                 args_str = args_str[:200] + "..."
             call_desc = f"(操作: 调用函数: {tool_name}({args_str}))"
-            self._append_to_realtime_log(unified_id, ai_name, call_desc)
+            self._append_to_realtime_log(unified_id, ai_name, call_desc, event=event)
             
             # 记录结果中的异常情况
             is_error = None
@@ -1005,7 +1075,7 @@ class LocalReminiscencePlugin(Star):
                 pass
             elif is_error is True:
                 # 明确为失败
-                self._append_to_realtime_log(unified_id, ai_name, "(操作失败: Error)")
+                self._append_to_realtime_log(unified_id, ai_name, "(操作失败: Error)", event=event)
             else:
                 # 兜底：无明确 is_error 标识时，通过正则做模糊判断，并清洗掉 status / flag 字样
                 clean_res_str = res_str
@@ -1015,7 +1085,7 @@ class LocalReminiscencePlugin(Star):
                 match = error_re.search(clean_res_str)
                 if match:
                     keyword = match.group(0).strip()
-                    self._append_to_realtime_log(unified_id, ai_name, f"(操作失败: {keyword})")
+                    self._append_to_realtime_log(unified_id, ai_name, f"(操作失败: {keyword})", event=event)
 
             # 4. 特殊处理 send_message_to_user 工具：记录 AI 发送给用户的真实话语
             if tool_name == "send_message_to_user" and not (is_error is True):
@@ -1045,7 +1115,7 @@ class LocalReminiscencePlugin(Star):
                         
                         sent_text = "".join(msg_parts).strip()
                         if sent_text and not res_str.strip().startswith("error:"):
-                            self._append_to_realtime_log(target_unified_id, ai_name, sent_text)
+                            self._append_to_realtime_log(target_unified_id, ai_name, sent_text, event=event)
                 except Exception as sexc:
                     logger.error(f"[APLR] 记录 send_message_to_user 的内容时出错: {sexc}")
         except Exception as e:
