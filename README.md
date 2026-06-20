@@ -6,11 +6,19 @@
 
 A lightweight local memory plugin for AstrBot that uses local embedding models and local database storage to save and recall chat history. No API keys required, zero embedding costs, token-saving, and complete privacy protection. Automatically records conversations using Cron jobs, and helps AI automatically recall relevant experiences through deep learning semantic search.
 
-### 🔄 待更新内容 (v1.3.5)
+### 🔄 小更新说明 (v1.3.5)
 
-1. 自定义日期分隔
-2. 优化自动实时读聊天记录的方式（希望能把工具调用和AI的思考部分记下来）
-3. 可能考虑让用户自己选择是否把AI工具调用记入聊天日志
+1. 每日总结自定义日期分隔
+    - 比如可以把每天早上4点到第二天凌晨4点算作“今天”，利好熬夜人群
+    - 支持在日期分割点自动触发每日总结
+    - 支持在日期分割点自动关闭所有活跃会话，第二天自动开启新对话，避免上下文积攒过长
+2. 优化自动实时读聊天记录的方式
+3. 记忆节点唤起时增加了对于群聊名称的额外唤起，让AI更了解自己在哪里聊天
+4. 优化每日总结给予AI聊天记录时对于当前session的描述（现在AI会额外知道群名）
+
+#### 老用户升级
+
+请务必到插件设置调整`自定义日期分割与自动总结配置`这一部分。
 
 <details>
 <summary>点击展开更早版本更新说明</summary>
