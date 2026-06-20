@@ -2354,13 +2354,30 @@ class LocalReminiscencePlugin(Star):
 
             # 4. 初始化总结器
             prompts_config = self.config.get("prompts", {})
+            event_summary_prompt = prompts_config.get("event_summary", "")
+            
+            # 考虑凌晨熬夜分割特判，追加跨日提示词
+            boundary_conf = self.config.get("day_boundary_config", {})
+            boundary_cron = boundary_conf.get("boundary_cron", "0 4 * * *")
+            h, m = self._parse_cron_time(boundary_cron)
+            if 0 <= h < 12:
+                time_str = f"{h:02d}:{m:02d}"
+                owl_hint = (
+                    f"\n\n- **【跨越午夜与凌晨的事件处理重要提醒】**：\n"
+                    f"  本系统设定的一天“跨日分界线”是在每天凌晨的 **{time_str}**。类似于人类深夜不眠、熬夜至次日清晨才算“今天结束”的生活习惯，"
+                    f"  在今日对话记录中凡是发生在半夜 00:00 至凌晨 {time_str} 期间的所有事件和对话（这在日历天上属于“第二天”的凌晨），在主观感官上**完全属于逻辑日期 {date_str} 的延续和深夜活动**。\n"
+                    f"  请你在进行事件提取（events）与总结心得（daily_reflection）时，务必将这些凌晨发生的对话内容也一同视作 {date_str} 这天的一部分进行合并抽象与心理解读。"
+                )
+                event_summary_prompt += owl_hint
+                logger.debug(f"[APLR] 检测到跨日时间在中午12点之前的凌晨 ({time_str})，已成功注入熬夜分界线提示词。")
+
             summarizer = DailySummarizer(
                 llm_generate_func=llm_generate_func,
                 ai_name=self.ai_name,
                 base_system_prompt=base_system_prompt,
                 base_user_prompt=base_user_prompt,
                 search_events_func=self._search_events_for_summary,
-                prompt_event_summary=prompts_config.get("event_summary", ""),
+                prompt_event_summary=event_summary_prompt,
                 prompt_memory_node=prompts_config.get("memory_node", "")
             )
 
