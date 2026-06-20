@@ -177,6 +177,12 @@
         "type": "bool",
         "hint": "开启后，系统将在用户定义的分界时刻 (boundary_cron) +9 分钟时自动关闭/清空所有激活中的会话历史，让第二天从全新上下文空对话开始，防止记忆臃肿。",
         "default": false
+      },
+      "insert_cron_to_chat_history": {
+        "description": "将完整 Cron 记录写入自带聊天记录",
+        "type": "bool",
+        "hint": "开启后，当定时任务 (Cron job) 结束时，将把该任务发生的完整交互记录（包括深层/浅层思考、函数调用及回复）批量插入到 AstrBot 自带的聊天记录中，使其永久留存。",
+        "default": false
       }
     }
   },
