@@ -54,9 +54,25 @@ def clean_dialogue_with_different_limits(
         max_assistant_chars=2000,
         platform="AstrBot",
         target_date=None,
-        target_user_id=None
+        target_user_id=None,
+        day_boundary_config: dict = None
     ):
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    h, m = 0, 0
+    has_boundary = False
+    if day_boundary_config:
+        boundary_cron = day_boundary_config.get("boundary_cron", "0 0 * * *")
+        try:
+            parts = boundary_cron.strip().split()
+            if len(parts) >= 2:
+                mm = int(parts[0])
+                hh = int(parts[1])
+                if 0 <= mm < 60 and 0 <= hh < 24:
+                    h, m = hh, mm
+                    has_boundary = True
+        except Exception:
+            pass
 
     if not db_path.exists():
         print(f"❌ 数据库不存在: {db_path}")
@@ -83,6 +99,7 @@ def clean_dialogue_with_different_limits(
 
     daily_txt = defaultdict(list)
     daily_json = defaultdict(list)
+    daily_meta = defaultdict(dict)
 
     def extract_timestamp(text):
         if not text: return None
@@ -96,7 +113,12 @@ def clean_dialogue_with_different_limits(
 
     def extract_nickname(text):
         if not text: return None
-        match = re.search(r'<system_reminder>.*?Nickname:\s*([^,\n\s]+)', text, re.IGNORECASE)
+        match = re.search(r'Nickname:\s*([^\n\r,<>]+)', text, re.IGNORECASE)
+        return match.group(1).strip() if match else None
+
+    def extract_group_name(text):
+        if not text: return None
+        match = re.search(r'Group name:\s*([^\n\r,<>]+)', text, re.IGNORECASE)
         return match.group(1).strip() if match else None
 
     def is_metadata_block(text):
@@ -147,9 +169,10 @@ def clean_dialogue_with_different_limits(
 
             text_messages = []
             turn_nickname = None
+            turn_group_name = None
 
             def process_content_item(item):
-                nonlocal timestamp, turn_nickname
+                nonlocal timestamp, turn_nickname, turn_group_name
                 is_think = False
                 if isinstance(item, str):
                     text = item
@@ -170,6 +193,9 @@ def clean_dialogue_with_different_limits(
                 nick = extract_nickname(text)
                 if nick:
                     turn_nickname = nick
+                gname = extract_group_name(text)
+                if gname:
+                    turn_group_name = gname
                 if not is_metadata_block(text):
                     if is_think:
                         if text.strip():
@@ -207,9 +233,44 @@ def clean_dialogue_with_different_limits(
                 process_content_item(contents)
             
             final_text = "\n".join(text_messages).strip()
-            date_key = get_date_key(timestamp) if timestamp else "unknown_date"
+            
+            is_excluded = False
+            if timestamp and has_boundary:
+                try:
+                    ts_norm = timestamp.replace(" ", "T")
+                    dt = datetime.fromisoformat(ts_norm)
+                    # 检查排除窗口：[boundary, boundary + 10min) 范围内不予记录
+                    dt_mins = dt.hour * 60 + dt.minute
+                    boundary_mins = h * 60 + m
+                    diff = (dt_mins - boundary_mins) % 1440
+                    if 0 <= diff < 10:
+                        is_excluded = True
+                    
+                    if not is_excluded:
+                        # 计算逻辑日期
+                        boundary_dt = dt.replace(hour=h, minute=m, second=0, microsecond=0)
+                        from datetime import timedelta
+                        if dt < boundary_dt:
+                            t_start = boundary_dt - timedelta(days=1)
+                        else:
+                            t_start = boundary_dt
+                        t_mid = t_start + timedelta(hours=12)
+                        date_key = t_mid.date().isoformat()
+                except Exception:
+                    date_key = get_date_key(timestamp) if timestamp else "unknown_date"
+            else:
+                date_key = get_date_key(timestamp) if timestamp else "unknown_date"
+                
+            if is_excluded:
+                continue
+
             if target_date and date_key != target_date:
                 continue
+
+            if turn_nickname:
+                daily_meta[date_key]["nickname"] = turn_nickname
+            if turn_group_name:
+                daily_meta[date_key]["group_name"] = turn_group_name
 
             # assistant 普通文本
             if role == "assistant" and final_text:
@@ -284,14 +345,53 @@ def clean_dialogue_with_different_limits(
         output_txt = output_dir / f"{date_key}_dialog_{safe_user_id}.txt"
         output_json = output_dir / f"{date_key}_dialog_{safe_user_id}.json"
 
+        meta_info = daily_meta.get(date_key, {})
+        group_name = meta_info.get("group_name")
+        nickname = meta_info.get("nickname")
+
+        # Session ID 格式为: connector:chat_type:specific_id
+        # chat_type 包含 GroupMessage (群聊) 或 FriendMessage (私聊)
+        is_group_by_session = "GroupMessage" in (target_user_id or "")
+        is_friend_by_session = "FriendMessage" in (target_user_id or "")
+        specific_id = target_user_id.split(":")[-1] if target_user_id and ":" in target_user_id else (target_user_id or "")
+
+        if group_name:
+            chat_type_desc = f"群聊 - {group_name}"
+            chat_type_val = "group"
+        elif is_group_by_session:
+            chat_type_desc = f"群聊 - ID: {specific_id}"
+            chat_type_val = "group"
+        elif nickname:
+            chat_type_desc = f"私聊 - {nickname}"
+            chat_type_val = "private"
+        elif is_friend_by_session:
+            chat_type_desc = f"私聊 - ID: {specific_id}"
+            chat_type_val = "private"
+        else:
+            chat_type_desc = "未提供场景元数据的对话记录"
+            chat_type_val = "private"
+
+        header_lines = [
+            "==================================================",
+            f"对话场景: [{chat_type_desc}]",
+            f"对话标识: {target_user_id}",
+            "==================================================",
+            "",
+            ""
+        ]
+
         with open(output_txt, "w", encoding="utf-8", errors="replace") as f:
-            f.write("\n".join(daily_txt[date_key]))
+            f.write("".join(header_lines) + "\n".join(daily_txt[date_key]))
 
         metadata = {
             "date": date_key,
             "total_messages": len(daily_json[date_key]),
             "platform": platform,
-            "created_at": datetime.now().isoformat(timespec="seconds")
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "session_id": target_user_id,
+            "chat_type": chat_type_val,
+            "group_name": group_name,
+            "nickname": nickname
         }
 
         json_output = {

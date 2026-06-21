@@ -6,15 +6,31 @@
 
 A lightweight local memory plugin for AstrBot that uses local embedding models and local database storage to save and recall chat history. No API keys required, zero embedding costs, token-saving, and complete privacy protection. Automatically records conversations using Cron jobs, and helps AI automatically recall relevant experiences through deep learning semantic search.
 
+### 🔄 小更新说明 (v1.3.5)
+
+1. 每日总结自定义日期分隔
+    - 比如可以把每天早上4点到第二天凌晨4点算作“今天”，利好熬夜人群
+    - 支持在日期分割点自动触发每日总结
+    - 支持在日期分割点自动关闭所有活跃会话，第二天自动开启新对话，避免上下文积攒过长
+2. 优化自动实时读聊天记录的方式
+    - 现在实时记录相比系统导出唯一的劣势是：LLM暂时无法在每日总结环节知道群聊名称
+4. 记忆节点唤起时增加了对于群聊名称的额外唤起，让AI更了解自己在哪里聊天
+5. 优化每日总结给予AI聊天记录时对于当前session的描述
+6. 插件设置`目标会话 ID 列表`如果写`all`将会在每日总结环节中使用所有session的聊天记录
+
+#### 老用户升级
+
+请务必到插件设置调整`自定义日期分割与自动总结配置`这一部分。
+
+<details>
+<summary>点击展开更早版本更新说明</summary>
+
 ### 🔄 小更新说明 (v1.3.4)
 
 1. 优化部分工具提示词
 2. 增加下列调试工具：
    - \APLR_maintenance load_model ：一键/手动下载并提前加载向量模型，避免后续因自动触发导致首次响应卡顿
    - \APLR_maintenance delete_daily_summary [YYYY-MM-DD] ：删除指定日期的事件、日总结、向量与其连接，并清理当日聊天日志文件
-
-<details>
-<summary>点击展开更早版本更新说明</summary>
 
 ### 🔄 小更新说明 (v1.3.3)
 
@@ -279,7 +295,11 @@ To use this plugin, you must perform the first three steps!
 
 ## 📄 To Do List
 
-- [x] 把回忆权重（重要性 时间衰减等）变成可根据个人需求手动调节的形式
+- [ ] 记忆条数达到一定数量或翻倍后自动提醒用户进行记忆聚类（大固化） v1.4.0
+- [ ] 通过记忆节点名称把事件串联 v1.4.0
+- [ ] 把本插件详细使用方法和各接口写个专门的md文件，现在README太长了 v1.4.0
+- [ ] 可选的定期自动备份记忆数据库 v1.3.6
+- [ ] 可选的cron job完整记录补充 v1.3.6
+- [ ] 让用户自己选择是否把AI工具调用记入聊天日志 v1.3.6
 - [ ] 可选择性开启的记忆强度动态变化（经常被回忆起的内容强度增加）
 - [ ] 记忆节点标签优化
-- [ ] 节点关联

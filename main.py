@@ -23,8 +23,14 @@ import subprocess
 import sys
 import numpy as np
 
-@register("local_reminiscence", "olozhika", "基于定时总结和向量化的本地记忆插件", "1.3.4")
+@register("local_reminiscence", "olozhika", "基于定时总结和向量化的本地记忆插件", "1.2.2")
 class LocalReminiscencePlugin(Star):
+    _bg_tasks = []
+    _last_summary_run_time = None
+    _last_close_run_time = None
+    _active_cron_records = {}
+    _running_summaries = set()
+
     def __init__(self, context: Context, config: any = None):
         super().__init__(context)
         self.context = context
@@ -134,11 +140,221 @@ class LocalReminiscencePlugin(Star):
             idle_timeout=self.config.get("model_idle_timeout", -1)
         )
         
-        # 启动背景检测任务
-        asyncio.create_task(self._model_idle_check_loop())
+        # 启动背景检测任务并且管理旧任务防止热重载重复运行
+        try:
+            curr_task = asyncio.current_task()
+            for task in asyncio.all_tasks():
+                if task == curr_task:
+                    continue
+                try:
+                    t_name = task.get_name()
+                    if t_name and t_name.startswith("APLR_"):
+                        task.cancel()
+                        logger.debug(f"[APLR] 检测并通过全局 event loop 取消已存在的后台任务: {t_name}")
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning(f"[APLR] 扫描并取消全局残留后台任务时异常: {e}")
+
+        while self.__class__._bg_tasks:
+            old_task = self.__class__._bg_tasks.pop()
+            if not old_task.done():
+                old_task.cancel()
+                logger.debug(f"[APLR] 已取消热重载前的旧后台任务: {old_task.get_name() if hasattr(old_task, 'get_name') else old_task}")
+
+        t1 = asyncio.create_task(self._model_idle_check_loop(), name="APLR_model_idle_check")
+        t2 = asyncio.create_task(self._auto_summary_check_loop(), name="APLR_auto_summary_check")
+        self.__class__._bg_tasks.extend([t1, t2])
         
         # 延迟初始化固化器，因为需要 LLM 函数
         self.consolidator = None
+
+    def _parse_cron_time(self, cron_str: str) -> tuple[int, int]:
+        """从 cron 字符串中解析出小时和分钟。
+        假定格式为 'm h * * *' (例如 '0 4 * * *')。如果是其他复杂/不合法格式，兜底返回 (4, 0) 代表凌晨4点。
+        """
+        try:
+            parts = cron_str.strip().split()
+            if len(parts) >= 2:
+                minute = int(parts[0])
+                hour = int(parts[1])
+                if 0 <= minute < 60 and 0 <= hour < 24:
+                    return hour, minute
+        except Exception as e:
+            logger.error(f"[APLR] 解析 cron 发生异常 '{cron_str}': {e}")
+        return 4, 0  # 默认凌晨 4:00
+
+    def _get_logical_date(self, dt: datetime) -> str:
+        """获取给定时间的逻辑日期"""
+        boundary_conf = self.config.get("day_boundary_config", {})
+        boundary_cron = boundary_conf.get("boundary_cron", "0 4 * * *")
+        h, m = self._parse_cron_time(boundary_cron)
+        
+        # 构造同 calendar 天的 boundary limit
+        boundary_dt = dt.replace(hour=h, minute=m, second=0, microsecond=0)
+        from datetime import timedelta
+        if dt < boundary_dt:
+            t_start = boundary_dt - timedelta(days=1)
+        else:
+            t_start = boundary_dt
+        t_mid = t_start + timedelta(hours=12)
+        return t_mid.strftime("%Y-%m-%d")
+
+    def _get_completed_logical_date(self) -> str:
+        """获取刚刚结束的逻辑日期。如果是自动总结，应该针对此日期进行。"""
+        # 稍微拨回 5 分钟
+        from datetime import timedelta
+        past_time = datetime.now() - timedelta(minutes=5)
+        return self._get_logical_date(past_time)
+
+    def _is_in_exclusion_window(self, dt: datetime) -> bool:
+        """检查给定时间是否在 [boundary_time, boundary_time + 10min) 的排除窗口内"""
+        boundary_conf = self.config.get("day_boundary_config", {})
+        boundary_cron = boundary_conf.get("boundary_cron", "0 4 * * *")
+        h, m = self._parse_cron_time(boundary_cron)
+        
+        # 计算 boundary 对应的分钟数
+        boundary_mins = h * 60 + m
+        # 计算当前时间对应的分钟数
+        dt_mins = dt.hour * 60 + dt.minute
+        
+        diff = (dt_mins - boundary_mins) % 1440
+        return 0 <= diff < 10
+
+    async def _auto_summary_check_loop(self):
+        """自动后台任务（每日总结和会话结束重置）触发检测循环（每分钟检查一次）"""
+        while True:
+            try:
+                await asyncio.sleep(60)
+                
+                # 读取配置
+                boundary_conf = self.config.get("day_boundary_config", {})
+                auto_summary = boundary_conf.get("auto_summary_enabled", False)
+                auto_end = boundary_conf.get("auto_end_session", False)
+                if not auto_summary and not auto_end:
+                    continue
+                
+                boundary_cron = boundary_conf.get("boundary_cron", "0 4 * * *")
+                h, m = self._parse_cron_time(boundary_cron)
+                now = datetime.now()
+                
+                # 1. 自动每日总结 (+1 分钟)
+                if auto_summary:
+                    target_h = h
+                    target_m = m + 1
+                    if target_m >= 60:
+                        target_m %= 60
+                        target_h = (target_h + 1) % 24
+                    
+                    if now.hour == target_h and now.minute == target_m:
+                        current_trigger_key = (now.date(), target_h, target_m)
+                        if self.__class__._last_summary_run_time != current_trigger_key:
+                            self.__class__._last_summary_run_time = current_trigger_key
+                            logger.info(f"[APLR] 触发自动每日总结：当前时间符合{boundary_cron} + 1min 时间点 ({target_h:02d}:{target_m:02d})")
+                            target_date = self._get_completed_logical_date()
+                            await self._run_automatic_daily_summary(target_date)
+                
+                # 2. 自动关闭所有激活会话 (+9 分钟)
+                if auto_end:
+                    target_h = h
+                    target_m = m + 9
+                    if target_m >= 60:
+                        target_m %= 60
+                        target_h = (target_h + 1) % 24
+                    
+                    if now.hour == target_h and now.minute == target_m:
+                        current_trigger_key = (now.date(), target_h, target_m)
+                        if self.__class__._last_close_run_time != current_trigger_key:
+                            self.__class__._last_close_run_time = current_trigger_key
+                            logger.info(f"[APLR] 触发自动结束/重置上下文会话：当前时间符合{boundary_cron} + 9min 时间点 ({target_h:02d}:{target_m:02d})")
+                            await self._close_all_active_sessions()
+            except Exception as e:
+                logger.error(f"[APLR] 自动后台任务检测循环发生异常: {e}")
+
+    async def _close_all_active_sessions(self):
+        """关闭/重置所有当前有记录的活页 Session (通过清空内存缓存和 sel_conv_id 实现下一次说话自动切换新会话)"""
+        logger.info("[APLR] 自动结束/重置所有激活中的对话上下文任务开始运行...")
+        try:
+            from astrbot.core import sp
+            from astrbot.core.utils.active_event_registry import active_event_registry
+            
+            conv_mgr = self.context.conversation_manager
+            
+            # Helper to robustly extract properties regardless of object structure (dict, obj, tuple)
+            def get_val(obj, attr_name, default=None):
+                if obj is None:
+                    return default
+                if isinstance(obj, dict):
+                    return obj.get(attr_name, default)
+                if hasattr(obj, attr_name):
+                    return getattr(obj, attr_name, default)
+                if isinstance(obj, (tuple, list)):
+                    if len(obj) == 1:
+                        return get_val(obj[0], attr_name, default)
+                    cols = ["user_id", "cid", "created_at", "updated_at", "title", "persona_id"]
+                    if attr_name in cols and len(obj) == len(cols):
+                        return obj[cols.index(attr_name)]
+                return default
+
+            # 1. 搜集所有当前的会话 UMO (除了拉取 DB, 也需要包含内存中那些未同步或在活动中的 session)
+            res = await conv_mgr.db.get_all_conversations(page=1, page_size=2000)
+            if isinstance(res, tuple):
+                convs = res[0]
+            else:
+                convs = res
+            
+            # 使用集合去重
+            umos = {get_val(conv, "user_id") for conv in convs if get_val(conv, "user_id")}
+            
+            # 把内存中 session_conversations 里的 session UMO 也合并进来
+            for umo in list(conv_mgr.session_conversations.keys()):
+                umos.add(umo)
+                
+            closed_count = 0
+            for umo in umos:
+                if not umo:
+                    continue
+                
+                # 获取当前的对话 ID 并进行状态验证
+                curr_cid = await conv_mgr.get_curr_conversation_id(umo)
+                if not curr_cid:
+                    continue
+                
+                # 查询当前对话的详细内容，只有存在内容(不为空)的活跃会话才会被处理重置
+                conv = await conv_mgr.db.get_conversation_by_id(curr_cid)
+                conv_content = get_val(conv, "content")
+                if conv and conv_content and len(conv_content) > 0:
+                    # 停止对该 UMO 正在后台运行的所有事件
+                    active_event_registry.request_agent_stop_all(umo)
+                    
+                    # 关键操作：清除内存对该 UMO 当前 selected 对话的缓存指向
+                    conv_mgr.session_conversations.pop(umo, None)
+                    
+                    # 关键操作：移去偏好设置，切断关联。下次说话触发 _get_session_conv 会由于 get_curr_conversation_id(umo) 为空而触发全新 new_conversation
+                    await sp.session_remove(umo, "sel_conv_id")
+                    
+                    closed_count += 1
+                    
+            logger.info(f"[APLR] 自动结束/重置所有旧会话上下文执行完毕。共安全移除了 {closed_count} 个活跃会话的当前指针 (历史数据完好保留在数据库中)。")
+        except Exception as e:
+            logger.error(f"[APLR] 自动结束/重置所有会话上下文时发生异常: {e}", exc_info=True)
+
+    async def _run_automatic_daily_summary(self, target_date: str):
+        if target_date in self.__class__._running_summaries:
+            logger.info(f"[APLR] 已经有一个自动每日总结任务正在运行该日期: {target_date}，跳过并发重复运行。")
+            return
+            
+        self.__class__._running_summaries.add(target_date)
+        logger.info(f"[APLR] 开始执行自动每日总结，日期: {target_date}")
+        try:
+            async for result in self._daily_summary_logic(event=None, date_str=target_date):
+                # 消费生成器
+                pass
+            logger.info(f"[APLR] 自动每日总结执行完毕，日期: {target_date}")
+        except Exception as e:
+            logger.error(f"[APLR] 自动每日总结执行遭遇异常: {e}", exc_info=True)
+        finally:
+            self.__class__._running_summaries.discard(target_date)
 
     async def _model_idle_check_loop(self):
         """向量模型闲置检测循环"""
@@ -150,42 +366,129 @@ class LocalReminiscencePlugin(Star):
             except Exception as e:
                 logger.error(f"[APLR] 向量模型闲置检测任务异常: {e}")
 
-    def _append_to_realtime_log(self, unified_id: str, role: str, content: str):
-        """将消息追加到实时日志文件"""
-        if not self.config.get("realtime_recording", False):
-            return
-        
-        now = datetime.now()
-        date_str = now.strftime("%Y-%m-%d")
-        timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
-        
-        safe_id = unified_id.replace(":", "_") if unified_id else "unknown"
-        folder = self.dialog_folder
-        folder.mkdir(parents=True, exist_ok=True)
-        dialog_file = folder / f"{date_str}_dialog_{safe_id}.json"
-        
-        data = {"conversations": []}
-        if dialog_file.exists():
-            try:
-                with open(dialog_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-            except Exception as e:
-                logger.error(f"[APLR] 读取实时日志失败: {e}")
-        
-        if not isinstance(data.get("conversations"), list):
-            data["conversations"] = []
+    def _is_session_matching(self, unified_id: str) -> bool:
+        """检查会话ID是否匹配监测配置"""
+        if not unified_id:
+            return False
+        target_list = list(self.target_user_id_list) if isinstance(self.target_user_id_list, list) else [self.target_user_id_list]
+        if len(target_list) == 1 and str(target_list[0]).strip().lower() == "all":
+            return True
+        return unified_id in target_list
 
-        data["conversations"].append({
-            "timestamp": timestamp,
-            "role": role,
-            "content": content
-        })
-        
+    def _get_effective_user_ids(self, date_str: str = None) -> List[str]:
+        """获取需要导出的实际会话ID列表，当配置为['all']时自动检索所有用户的ID"""
+        target_list = list(self.target_user_id_list) if isinstance(self.target_user_id_list, list) else [self.target_user_id_list]
+        if len(target_list) == 1 and str(target_list[0]).strip().lower() == "all":
+            effective_user_ids = []
+            
+            # 1. 扫描本地文件夹中的现有 JSON 会话记录（针对该日期已录制的情况）
+            if date_str:
+                try:
+                    for filepath in self.dialog_folder.glob(f"{date_str}_dialog_*.json"):
+                        filename = filepath.name
+                        prefix_len = len(f"{date_str}_dialog_")
+                        suffix_len = len(".json")
+                        safe_id = filename[prefix_len:-suffix_len]
+                        if safe_id and safe_id not in effective_user_ids:
+                            effective_user_ids.append(safe_id)
+                except Exception as e:
+                    logger.error(f"[APLR] 扫描本地 JSON 发现用户ID失败: {e}")
+            
+            # 2. 从核心数据库获取所有用户 ID（用于未开启实时录制但需提取全部的情况）
+            try:
+                import sqlite3
+                core_db_path = Path.cwd() / "data" / "data_v4.db"
+                if core_db_path.exists():
+                    conn = sqlite3.connect(str(core_db_path))
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT DISTINCT user_id FROM conversations")
+                    db_user_ids = [row[0] for row in cursor.fetchall() if row[0]]
+                    conn.close()
+                    for db_uid in db_user_ids:
+                        # 为了避免带有冒号的真正 ID 与从文件名解析的下划线 ID 重复，
+                        # 如果发现它的规范化下划线版本已在列表中，先将其移除，然后追加带冒号的真实 ID
+                        db_safe = db_uid.replace(":", "_")
+                        if db_safe in effective_user_ids:
+                            effective_user_ids.remove(db_safe)
+                        if db_uid not in effective_user_ids:
+                            effective_user_ids.append(db_uid)
+            except Exception as e:
+                logger.error(f"[APLR] 从核心数据库获取所有用户ID失败: {e}")
+                
+            if not effective_user_ids:
+                effective_user_ids = ["all"]
+            return effective_user_ids
+        else:
+            return target_list
+
+    def _append_to_realtime_log(self, unified_id: str, role: str, content: str, event: any = None):
+        """将消息追加到实时日志文件 (JSON)"""
         try:
-            with open(dialog_file, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            if event:
+                actual_event = getattr(event, 'event', event)
+                is_cron = (actual_event.__class__.__name__ == "CronMessageEvent")
+                if is_cron and self.config.get("day_boundary_config", {}).get("insert_cron_to_chat_history", False):
+                    cron_key = id(actual_event)
+                    if cron_key not in self.__class__._active_cron_records:
+                        self.__class__._active_cron_records[cron_key] = []
+                    self.__class__._active_cron_records[cron_key].append({
+                        "role": "user" if role not in ["assistant", self.ai_name] else "assistant",
+                        "content": content if role not in ["assistant", self.ai_name] else f"{role}: {content}"
+                    })
+
+            if not self.config.get("realtime_recording", False):
+                return
+            
+            now = datetime.now()
+            if self._is_in_exclusion_window(now):
+                return
+            
+            date_str = self._get_logical_date(now)
+            timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
+            
+            safe_id = unified_id.replace(":", "_") if unified_id else "unknown"
+            folder = self.dialog_folder
+            folder.mkdir(parents=True, exist_ok=True)
+            dialog_file = folder / f"{date_str}_dialog_{safe_id}.json"
+            
+            # 使用 JSON 覆盖模式，抗文件破损
+            data = {"conversations": []}
+            if dialog_file.exists():
+                try:
+                    with open(dialog_file, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                except Exception as e:
+                    logger.error(f"[APLR] 读取实时 JSON 失败，可能存在破损 (已备份容错): {e}")
+                    try:
+                        dialog_file.rename(dialog_file.with_suffix('.json.corrupted'))
+                    except:
+                        pass
+                    data = {"conversations": []}
+            
+            if not isinstance(data.get("conversations"), list):
+                data["conversations"] = []
+
+            data["conversations"].append({
+                "timestamp": timestamp,
+                "role": role,
+                "content": content
+            })
+            
+            # 使用原子层级写入：写入 temp file 成功后直接原子替换
+            temp_file = dialog_file.with_suffix('.json.tmp')
+            try:
+                with open(temp_file, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                temp_file.replace(dialog_file)
+            except Exception as e:
+                logger.error(f"[APLR] 写入实时 JSON 失败: {e}")
+                if temp_file.exists():
+                    try:
+                        temp_file.unlink()
+                    except:
+                        pass
         except Exception as e:
-            logger.error(f"[APLR] 写入实时日志失败: {e}")
+            logger.error(f"[APLR] _append_to_realtime_log 遭遇不可期异常 (不影响聊天进程): {e}")
 
     def _get_unified_id(self, event: any) -> str:
         """从各种可能的事件对象中安全获取 unified_id"""
@@ -255,17 +558,24 @@ class LocalReminiscencePlugin(Star):
         # 如果未开启实时记录且不需要注入逻辑，理论上可以跳过大半，但注入逻辑是核心功能，所以只在记录处检查。
         
         # 记录用户消息（实时记录模式）
-        unified_id = self._get_unified_id(event)
-        if self.config.get("realtime_recording", False):
-            if unified_id in self.target_user_id_list:
-                actual_event = getattr(event, 'event', event)
-                nickname = self._get_sender_nickname(event)
-                text = actual_event.get_plain_text() if hasattr(actual_event, 'get_plain_text') else getattr(actual_event, 'message_str', '')
-                if text:
-                    self._append_to_realtime_log(unified_id, nickname, text)
-            else:
-                logger.debug(f"[APLR] 实时记录跳过: 用户 ID '{unified_id}' 不在监测列表 {self.target_user_id_list} 中")
+        try:
+            unified_id = self._get_unified_id(event) or "system"
+            actual_event = getattr(event, 'event', event)
+            is_cron = (actual_event.__class__.__name__ == "CronMessageEvent") if event else False
+            
+            is_realtime_enabled = self.config.get("realtime_recording", False)
+            is_cron_history_enabled = self.config.get("day_boundary_config", {}).get("insert_cron_to_chat_history", False)
+            
+            if is_realtime_enabled or (is_cron_history_enabled and is_cron):
+                if self._is_session_matching(unified_id):
+                    nickname = self._get_sender_nickname(event)
+                    text = actual_event.get_plain_text() if hasattr(actual_event, 'get_plain_text') else getattr(actual_event, 'message_str', '')
+                    if text:
+                        self._append_to_realtime_log(unified_id, nickname, text, event=event)
+        except Exception as e:
+            logger.error(f"[APLR] 实时记录用户消息异常 (不影响聊天): {e}")
         
+        unified_id = self._get_unified_id(event) or "system"
         # 提取 req (ProviderRequest)
         req = kwargs.get('req') or (args[0] if args and isinstance(args[0], ProviderRequest) else None)
         if not req:
@@ -301,7 +611,13 @@ class LocalReminiscencePlugin(Star):
             else:
                 conversation: Conversation = await conv_mgr.get_conversation(uid, curr_cid)
                 # 下面这行这么写纯粹是因为作者olozhika不熟悉json格式...
-                if not conversation or not conversation.history or conversation.history == '[]' or json.loads(conversation.history) == []:
+                history_json_empty = False
+                if conversation and conversation.history:
+                    try:
+                        history_json_empty = (json.loads(conversation.history) == [])
+                    except Exception:
+                        history_json_empty = True
+                if not conversation or not conversation.history or conversation.history == '[]' or history_json_empty:
                     is_new_session = True
             
             # 如果是新对话开启，则注入历史摘要
@@ -367,27 +683,100 @@ class LocalReminiscencePlugin(Star):
                     req.system_prompt += memory_text
                     logger.info(f"[APLR] 检测到新对话开启，已为会话注入历史记忆，长度: {len(memory_text)}")
 
-            # 0. 提取当前用户的 Nickname (增强版逻辑)
+            # 0. 提取当前用户的 Nickname 与群名称 Group Name (增强版多路融合提取逻辑)
             current_nickname = None
+            current_group_name = None
             
-            # 策略 A: 尝试从标签中提取
-            tag_match = re.search(r'<system_reminder>(.*?)</system_reminder>', message_str, re.IGNORECASE | re.DOTALL)
-            if tag_match:
-                tag_content = tag_match.group(1)
-                nick_match = re.search(r'Nickname:\s*([^,\s]+)', tag_content, re.IGNORECASE)
-                if nick_match:
-                    current_nickname = nick_match.group(1).strip()
-                    logger.debug(f"[APLR] 从标签中成功提取 Nickname: {current_nickname}")
-            
-            # 策略 B: 兜底方案，如果标签提取失败，直接全文搜索关键词
-            if not current_nickname:
-                nick_match = re.search(r'Nickname:\s*([^,\s]+)', message_str, re.IGNORECASE)
-                if nick_match:
-                    current_nickname = nick_match.group(1).strip()
-                    logger.debug(f"[APLR] 标签提取失败，通过全文搜索提取 Nickname: {current_nickname}")
-            
+            # 路径 A：优先收集所有相关的文本搜索空间，以便优先定位 <system_reminder> 标签（前置插件修改常存留于此）
+            texts_to_search = []
+            if message_str:
+                texts_to_search.append(message_str)
+                
+            if req:
+                # 扫描 extra_user_content_parts
+                extra_parts = getattr(req, 'extra_user_content_parts', [])
+                if isinstance(extra_parts, list):
+                    for part in extra_parts:
+                        part_text = getattr(part, 'text', '') or (part.get('text', '') if isinstance(part, dict) else '')
+                        if part_text:
+                            texts_to_search.append(part_text)
+                
+                # 扫描 user_content_parts
+                user_parts = getattr(req, 'user_content_parts', [])
+                if isinstance(user_parts, list):
+                    for part in user_parts:
+                        part_text = getattr(part, 'text', '') or (part.get('text', '') if isinstance(part, dict) else '')
+                        if part_text:
+                            texts_to_search.append(part_text)
+
+            # 1. 第一级优先级：优先从 <system_reminder> 标签中获取（前置插件最常通过该标签写入最新/已被修改的用户昵称）
+            for text_val in texts_to_search:
+                if not isinstance(text_val, str):
+                    continue
+                tag_match = re.search(r'<system_reminder>(.*?)</system_reminder>', text_val, re.IGNORECASE | re.DOTALL)
+                if tag_match:
+                    tag_content = tag_match.group(1)
+                    if not current_nickname:
+                        nick_match = re.search(r'Nickname:\s*([^\n\r,<>]+)', tag_content, re.IGNORECASE)
+                        if nick_match:
+                            current_nickname = nick_match.group(1).strip()
+                            logger.info(f"[APLR] 优先从 system_reminder 标签提取 Nickname 成功: {current_nickname}")
+                    if not current_group_name:
+                        group_match = re.search(r'Group name:\s*([^\n\r,<>]+)', tag_content, re.IGNORECASE)
+                        if group_match:
+                            current_group_name = group_match.group(1).strip()
+                            logger.info(f"[APLR] 优先从 system_reminder 标签提取 Group Name 成功: {current_group_name}")
+
+            # 2. 第二级优先级：如果 <system_reminder> 中没有提取到，作为备用方案从 AstrBot 原生 message_obj 实体中提取
+            if not current_nickname or not current_group_name:
+                actual_event = getattr(event, 'event', event)
+                message_obj = getattr(actual_event, 'message_obj', None)
+                if message_obj:
+                    if not current_nickname:
+                        sender = getattr(message_obj, 'sender', None)
+                        if sender:
+                            for attr in ['nickname', 'card', 'name']:
+                                val = getattr(sender, attr, None)
+                                if val and str(val).strip():
+                                    current_nickname = str(val).strip()
+                                    logger.debug(f"[APLR] 作为备用从 message_obj 提取 Nickname 成功: {current_nickname}")
+                                    break
+                            if not current_nickname and hasattr(sender, 'user_id'):
+                                current_nickname = str(sender.user_id).strip()
+                                logger.debug(f"[APLR] 作为备用从 user_id 提取 Nickname 成功: {current_nickname}")
+                                
+                    if not current_group_name:
+                        group = getattr(message_obj, 'group', None)
+                        if group and hasattr(group, 'group_name'):
+                            g_name = getattr(group, 'group_name', None)
+                            if g_name and str(g_name).strip():
+                                current_group_name = str(g_name).strip()
+                                logger.debug(f"[APLR] 作为备用从 message_obj 提取 Group Name 成功: {current_group_name}")
+
+            # 3. 第三级优先级：最末级全文正则表达式兜底（防止未包裹在 system_reminder 标签中的普通文本）
+            if not current_nickname or not current_group_name:
+                for text_val in texts_to_search:
+                    if not isinstance(text_val, str):
+                        continue
+                    if not current_nickname:
+                        nick_match = re.search(r'Nickname:\s*([^\n\r,<>]+)', text_val, re.IGNORECASE)
+                        if nick_match:
+                            current_nickname = nick_match.group(1).strip()
+                            logger.debug(f"[APLR] 兜底从全文正则提取 Nickname 成功: {current_nickname}")
+                    if not current_group_name:
+                        group_match = re.search(r'Group name:\s*([^\n\r,<>]+)', text_val, re.IGNORECASE)
+                        if group_match:
+                            current_group_name = group_match.group(1).strip()
+                            logger.debug(f"[APLR] 兜底从全文正则提取 Group Name 成功: {current_group_name}")
+
             if not current_nickname:
                 logger.debug(f"[APLR] 无法从消息中提取 Nickname")
+            else:
+                logger.info(f"[APLR] 融合模块提取的当前对话用户昵称: {current_nickname}")
+            if not current_group_name:
+                logger.debug(f"[APLR] 无法从消息中提取 Group Name")
+            else:
+                logger.info(f"[APLR] 融合模块提取的当前对话群聊名称: {current_group_name}")
             
             # 清理消息内容（去除系统提示词部分，避免干扰检索）
             clean_message = re.sub(r'<system_reminder>.*?</system_reminder>', '', message_str, flags=re.DOTALL).strip()
@@ -404,14 +793,66 @@ class LocalReminiscencePlugin(Star):
             if current_nickname:
                 logger.debug(f"[APLR] 正在搜索用户节点: {current_nickname}")
                 user_nodes = self.db.search_nodes(current_nickname, limit=1, include_description=False)
+                
+                # 双向/逆向模糊匹配备用方案：如果正面查找未中，尝试在数据库中寻找其名称被包含于 current_nickname 中的节点
+                if not user_nodes:
+                    try:
+                        with self.db._get_conn() as conn:
+                            cursor = conn.cursor()
+                            cursor.execute("""
+                                SELECT * FROM nodes 
+                                WHERE LENGTH(name) >= 2 AND ? LIKE '%' || LOWER(name) || '%'
+                                ORDER BY LENGTH(name) DESC, last_updated DESC
+                                LIMIT 1
+                            """, (current_nickname.lower(),))
+                            row = cursor.fetchone()
+                            if row:
+                                user_nodes = [dict(row)]
+                                logger.debug(f"[APLR] 触发逆向匹配，找到用户节点: {user_nodes[0]['name']}")
+                    except Exception as e:
+                        logger.warning(f"[APLR] 搜索用户节点逆向匹配时出错: {e}")
+
                 if user_nodes:
                     node = user_nodes[0]
-                    logger.debug(f"[APLR] 找到用户节点: {node['name']} (ID: {node['id']})")
+                    logger.debug(f"[APLR] 找到用户节点: {node['name']} (类型: {node['type']})")
                     node['is_user'] = True # 标记为当前聊天对象
                     all_nodes.append(node)
                     seen_names.add(node['name'])
                 else:
                     logger.debug(f"[APLR] 未找到用户节点: {current_nickname}")
+
+            # 其次尝试获取群聊空间节点
+            if current_group_name:
+                logger.debug(f"[APLR] 正在搜索群聊节点: {current_group_name}")
+                group_nodes = self.db.search_nodes(current_group_name, limit=1, include_description=False)
+                
+                # 双向/逆向模糊匹配备用方案：如果正面查找未中，尝试在数据库中寻找其名称被包含于 current_group_name 中的节点
+                if not group_nodes:
+                    try:
+                        with self.db._get_conn() as conn:
+                            cursor = conn.cursor()
+                            cursor.execute("""
+                                SELECT * FROM nodes 
+                                WHERE LENGTH(name) >= 2 AND ? LIKE '%' || LOWER(name) || '%'
+                                ORDER BY LENGTH(name) DESC, last_updated DESC
+                                LIMIT 1
+                            """, (current_group_name.lower(),))
+                            row = cursor.fetchone()
+                            if row:
+                                group_nodes = [dict(row)]
+                                logger.debug(f"[APLR] 触发逆向匹配，找到群聊节点: {group_nodes[0]['name']}")
+                    except Exception as e:
+                        logger.warning(f"[APLR] 搜索群聊节点逆向匹配时出错: {e}")
+
+                if group_nodes:
+                    node = group_nodes[0]
+                    if node['name'] not in seen_names:
+                        logger.debug(f"[APLR] 找到群聊节点: {node['name']} (类型: {node['type']})")
+                        node['is_group'] = True # 标记为当前群聊空间
+                        all_nodes.append(node)
+                        seen_names.add(node['name'])
+                else:
+                    logger.debug(f"[APLR] 未找到群聊节点: {current_group_name}")
 
             # 获取消息相关的节点
             msg_nodes, _ = await self._get_nodes_context(message_str, include_description=False, limit_per_kw=1)
@@ -494,73 +935,248 @@ class LocalReminiscencePlugin(Star):
     @filter.on_llm_response()
     async def on_llm_response(self, event: any, *args, **kwargs):
         """记录 AI 的回复（实时模式）"""
-        if not self.config.get("realtime_recording", False):
-            return
-        
-        unified_id = self._get_unified_id(event)
-        if not event or unified_id not in self.target_user_id_list:
-            return
+        try:
+            if not event:
+                return
+            actual_event = getattr(event, 'event', event)
+            is_cron = (actual_event.__class__.__name__ == "CronMessageEvent") if event else False
             
-        ai_name = self.ai_name
-        
-        # 优先使用传入的 resp，如果没有则尝试从事件对象中获取（部分版本兼容）
-        resp = kwargs.get('resp') or (args[0] if args else getattr(event, 'resp', None))
-        if not resp:
-            return
-        
-        # 尝试提取思考过程 (支持某些带有思考的模型)
-        think_content = ""
-        if hasattr(resp, 'extra') and isinstance(resp.extra, dict):
-            # 不同 provider 的字段名可能不同
-            think_content = resp.extra.get('think', '') or resp.extra.get('reasoning', '')
+            is_realtime_enabled = self.config.get("realtime_recording", False)
+            is_cron_history_enabled = self.config.get("day_boundary_config", {}).get("insert_cron_to_chat_history", False)
             
-        if think_content:
-            self._append_to_realtime_log(unified_id, ai_name, f"(思考: {think_content.strip()})")
+            if not (is_realtime_enabled or (is_cron_history_enabled and is_cron)):
+                return
             
-        # 记录主干回复
-        text = getattr(resp, 'completion_text', '')
-        if text:
-            text = text.strip()
-            # 过滤掉 APLR 内部可能产生的空回复或标记
-            if text and not text.startswith("I finished this job"):
-                self._append_to_realtime_log(unified_id, ai_name, text)
+            unified_id = self._get_unified_id(event) or "system"
+            if not self._is_session_matching(unified_id):
+                return
+                
+            ai_name = self.ai_name
+            
+            # 优先使用传入的 resp，如果没有则尝试从事件对象中获取（部分版本兼容）
+            resp = kwargs.get('resp') or (args[0] if args else getattr(event, 'resp', None))
+            if not resp:
+                return
+            
+            # 尝试提取思考过程 (支持 standard reasoning_content 属性，以及一些带有思考的 extra 思考)
+            think_content = ""
+            if hasattr(resp, 'reasoning_content') and resp.reasoning_content:
+                think_content = resp.reasoning_content
+            elif hasattr(resp, 'extra') and isinstance(resp.extra, dict):
+                # 不同 provider 的字段名可能不同
+                think_content = resp.extra.get('think', '') or resp.extra.get('reasoning', '')
+                
+            if is_cron:
+                # 3. 对于cron job中的AI说话和reasoning_content其实都是思考，在这种情况下可以把reasoning_content记作深层思考，其他内容记做浅层思考
+                if think_content:
+                    self._append_to_realtime_log(unified_id, ai_name, f"(深层思考: {think_content.strip()})", event=event)
+                
+                text = getattr(resp, 'completion_text', '')
+                if text:
+                    text = text.strip()
+                    if text and not text.startswith("I finished this job"):
+                        self._append_to_realtime_log(unified_id, ai_name, f"(浅层思考: {text})", event=event)
+            else:
+                if think_content:
+                    self._append_to_realtime_log(unified_id, ai_name, f"(思考: {think_content.strip()})", event=event)
+                
+                # 记录主干回复
+                text = getattr(resp, 'completion_text', '')
+                if text:
+                    text = text.strip()
+                    # 过滤掉 APLR 内部可能产生的空回复或标记
+                    if text and not text.startswith("I finished this job"):
+                        self._append_to_realtime_log(unified_id, ai_name, text, event=event)
+        except Exception as e:
+            logger.error(f"[APLR] 实时记录 AI 回复异常 (不影响聊天): {e}")
+
+    @filter.on_agent_done()
+    async def on_agent_done(self, event: any, run_context: any, response: any, *args, **kwargs):
+        """当 Agent 运行完成后，如果开启了在 cron job 结束时将完整交互记录写入自带聊天记录，则进行处理"""
+        try:
+            if not self.config.get("day_boundary_config", {}).get("insert_cron_to_chat_history", False):
+                return
+            
+            actual_event = getattr(event, 'event', event)
+            is_cron = (actual_event.__class__.__name__ == "CronMessageEvent")
+            if not is_cron:
+                return
+                
+            cron_key = id(actual_event)
+            # Fetch accumulated records for this cron job
+            records = self.__class__._active_cron_records.pop(cron_key, [])
+            if not records:
+                return
+                
+            umo = getattr(event, 'unified_msg_origin', None)
+            if not umo:
+                logger.warning("[APLR] 无法获取 cron job 事件的消息来源，跳过插入官方聊天记录")
+                return
+                
+            conv_mgr = self.context.conversation_manager
+            session_curr_cid = await conv_mgr.get_curr_conversation_id(umo)
+            if not session_curr_cid:
+                session_curr_cid = await conv_mgr.new_conversation(umo)
+                
+            async def delayed_insert_cron():
+                await asyncio.sleep(0.5)
+                try:
+                    conv = await conv_mgr.get_conversation(umo, session_curr_cid)
+                    if not conv:
+                        logger.warning(f"[APLR] 无法获取或创建 cron job 对应的会话: {session_curr_cid}")
+                        return
+                        
+                    # Load the current history
+                    history = []
+                    if conv.history:
+                        try:
+                            history = json.loads(conv.history)
+                        except Exception as exc:
+                            logger.warning(f"[APLR] 无法解析官方会话 {conv.cid} 历史: {exc}")
+                            history = []
+                        
+                    # Append each record to history
+                    for record in records:
+                        history.append({
+                            "role": record["role"],
+                            "content": record["content"]
+                        })
+                        
+                    # Update the official conversation store
+                    await conv_mgr.update_conversation(
+                        unified_msg_origin=umo,
+                        conversation_id=conv.cid,
+                        history=history
+                    )
+                    logger.info(f"[APLR] 成功将 {len(records)} 条 Cron Job 完整交互记录延迟并写入 {conv.cid} 官方聊天记录数据库")
+                except Exception as ex:
+                    logger.error(f"[APLR] 延迟将 Cron Job 完整交互日志写入自带聊天记录失败: {ex}", exc_info=True)
+
+            asyncio.create_task(delayed_insert_cron())
+        except Exception as e:
+            logger.error(f"[APLR] 将 Cron Job 完整交互日志写入自带聊天记录失败: {e}", exc_info=True)
 
     @filter.on_llm_tool_respond()
     async def on_llm_tool_respond(self, event: any, *args, **kwargs):
         """记录工具调用活动（实时模式）"""
-        if not self.config.get("realtime_recording", False):
-            return
-        
-        unified_id = self._get_unified_id(event)
-        if not event or unified_id not in self.target_user_id_list:
-            return
-
-        ai_name = self.ai_name
-        
-        # 优先使用单独传参，否则尝试从事件对象或 kwargs 获取
-        # args[0] 是 tool_name, args[1] 是 args, args[2] 是 result (如果是通过位置参数传递)
-        tool_name = kwargs.get('tool_name') or (args[0] if len(args) > 0 else getattr(event, 'tool_name', 'unknown'))
-        tool_args = kwargs.get('args') or (args[1] if len(args) > 1 else getattr(event, 'args', {}))
-        result = kwargs.get('result') or (args[2] if len(args) > 2 else getattr(event, 'result', ''))
-
-        # 记录调用描述
         try:
-            args_str = json.dumps(tool_args, ensure_ascii=False)
-        except:
-            args_str = str(tool_args)
+            if not event:
+                return
+            actual_event = getattr(event, 'event', event)
+            is_cron = (actual_event.__class__.__name__ == "CronMessageEvent") if event else False
             
-        if len(args_str) > 200:
-            args_str = args_str[:200] + "..."
-        call_desc = f"(操作: 调用函数: {tool_name}({args_str}))"
-        self._append_to_realtime_log(unified_id, ai_name, call_desc)
-        
-        # 记录结果中的异常情况
-        res_str = str(result)
-        error_re = re.compile(r"(error|failed|exception|超时|失败|not found|insufficient|denied)", re.IGNORECASE)
-        match = error_re.search(res_str)
-        if match:
-            keyword = match.group(0).strip()
-            self._append_to_realtime_log(unified_id, ai_name, f"(操作失败: {keyword})")
+            is_realtime_enabled = self.config.get("realtime_recording", False)
+            is_cron_history_enabled = self.config.get("day_boundary_config", {}).get("insert_cron_to_chat_history", False)
+            
+            if not (is_realtime_enabled or (is_cron_history_enabled and is_cron)):
+                return
+            
+            unified_id = self._get_unified_id(event) or "system"
+            if not self._is_session_matching(unified_id):
+                return
+                
+            ai_name = self.ai_name
+            
+            # 优先使用单独传参，否则尝试从事件对象或 kwargs 获取
+            # args[0] 是 tool_name, args[1] 是 args, args[2] 是 result (如果是通过位置参数传递)
+            tool_obj = kwargs.get('tool_name') or (args[0] if len(args) > 0 else getattr(event, 'tool_name', 'unknown'))
+            if hasattr(tool_obj, 'name'):
+                tool_name = tool_obj.name
+            else:
+                tool_name = str(tool_obj)
+                
+            tool_args = kwargs.get('args') or (args[1] if len(args) > 1 else getattr(event, 'args', {}))
+            result = kwargs.get('result') or (args[2] if len(args) > 2 else getattr(event, 'result', ''))
+
+            # 记录调用描述
+            try:
+                args_str = json.dumps(tool_args, ensure_ascii=False)
+            except:
+                args_str = str(tool_args)
+                
+            if len(args_str) > 200:
+                args_str = args_str[:200] + "..."
+            call_desc = f"(操作: 调用函数: {tool_name}({args_str}))"
+            self._append_to_realtime_log(unified_id, ai_name, call_desc, event=event)
+            
+            # 记录结果中的异常情况
+            is_error = None
+            
+            # 1. 企图通过属性判断
+            for attr in ['is_error', 'isError']:
+                if hasattr(result, attr):
+                    val = getattr(result, attr)
+                    if isinstance(val, bool):
+                        is_error = val
+                        break
+                        
+            # 2. 企图通过字典键判断
+            if is_error is None and isinstance(result, dict):
+                for k in ['is_error', 'isError']:
+                    if k in result:
+                        val = result[k]
+                        if isinstance(val, bool):
+                            is_error = val
+                            break
+                            
+            # 3. 企图通过序列化字符串特征判断 (特别针对 MCP CallToolResult)
+            res_str = str(result)
+            if is_error is None:
+                if "isError=False" in res_str or "is_error=False" in res_str:
+                    is_error = False
+                elif "isError=True" in res_str or "is_error=True" in res_str:
+                    is_error = True
+
+            if is_error is False:
+                # 明确为成功，不记录失败
+                pass
+            elif is_error is True:
+                # 明确为失败
+                self._append_to_realtime_log(unified_id, ai_name, "(操作失败: Error)", event=event)
+            else:
+                # 兜底：无明确 is_error 标识时，通过正则做模糊判断，并清洗掉 status / flag 字样
+                clean_res_str = res_str
+                clean_res_str = re.sub(r'is_?error\s*=\s*\w+', '', clean_res_str, flags=re.IGNORECASE)
+                
+                error_re = re.compile(r"(error|failed|exception|超时|失败|not found|insufficient|denied)", re.IGNORECASE)
+                match = error_re.search(clean_res_str)
+                if match:
+                    keyword = match.group(0).strip()
+                    self._append_to_realtime_log(unified_id, ai_name, f"(操作失败: {keyword})", event=event)
+
+            # 4. 特殊处理 send_message_to_user 工具：记录 AI 发送给用户的真实话语
+            if tool_name == "send_message_to_user" and not (is_error is True):
+                try:
+                    target_session = tool_args.get("session")
+                    target_unified_id = str(target_session) if target_session else unified_id
+                    
+                    if self._is_session_matching(target_unified_id):
+                        msg_parts = []
+                        messages_list = tool_args.get("messages", [])
+                        if isinstance(messages_list, list):
+                            for msg in messages_list:
+                                if not isinstance(msg, dict):
+                                    continue
+                                type_ = str(msg.get("type", "")).lower()
+                                if type_ == "plain":
+                                    msg_parts.append(msg.get("text", ""))
+                                elif type_ == "image":
+                                    msg_parts.append("[图片]")
+                                elif type_ == "record":
+                                    msg_parts.append("[语音消息]")
+                                elif type_ == "file":
+                                    name = msg.get("text") or (os.path.basename(msg.get("path")) if msg.get("path") else "") or "file"
+                                    msg_parts.append(f"[文件: {name}]")
+                                elif type_ == "mention_user":
+                                    msg_parts.append(f"@{msg.get('mention_user_id', '')}")
+                        
+                        sent_text = "".join(msg_parts).strip()
+                        if sent_text and not res_str.strip().startswith("error:"):
+                            self._append_to_realtime_log(target_unified_id, ai_name, sent_text, event=event)
+                except Exception as sexc:
+                    logger.error(f"[APLR] 记录 send_message_to_user 的内容时出错: {sexc}")
+        except Exception as e:
+            logger.error(f"[APLR] 实时记录工具活动异常 (不影响聊天): {e}")
 
     async def _get_nodes_context(self, text: str, include_description: bool = False, max_nodes: int = 8, limit_per_kw: int = 1) -> tuple[list[dict], list[str]]:
         """根据文本提取关键词并获取相关记忆节点对象"""
@@ -669,7 +1285,8 @@ class LocalReminiscencePlugin(Star):
         
         try:
             core_db_path = Path.cwd() / "data" / "data_v4.db"
-            for target_user_id in self.target_user_id_list:
+            effective_ids = self._get_effective_user_ids(date_str)
+            for target_user_id in effective_ids:
                 clean_dialogue_with_different_limits(
                     db_path=core_db_path,
                     output_dir=self.dialog_folder,
@@ -677,7 +1294,8 @@ class LocalReminiscencePlugin(Star):
                     ai_name=self.ai_name,
                     platform="AstrBot",
                     target_date=date_str,
-                    target_user_id=target_user_id
+                    target_user_id=target_user_id,
+                    day_boundary_config=self.config.get("day_boundary_config", {})
                 )
             yield event.plain_result(f"✅ 已成功提取 {date_str} 的聊天记录。")
         except Exception as e:
@@ -1661,10 +2279,10 @@ class LocalReminiscencePlugin(Star):
         """为总结过程提供的事件搜索接口"""
         return await self._get_relevant_events(query, top_n=top_n, exclude_date=exclude_date)
 
-    async def _daily_summary_logic(self, event: AstrMessageEvent, date_str: str = None):
+    async def _daily_summary_logic(self, event: AstrMessageEvent = None, date_str: str = None):
         # 如果没有直接传入 date_str，则尝试从消息中解析
         if not date_str:
-            args = event.message_str.strip().split()
+            args = event.message_str.strip().split() if event else []
             # 兼容处理：跳过命令名或斜杠命令名
             if args and (args[0] in ["daily_summary", "/daily_summary", "daily_summary_command", "/daily_summary_command"]):
                 args = args[1:]
@@ -1672,11 +2290,13 @@ class LocalReminiscencePlugin(Star):
             if args:
                 date_str = args[0]
             else:
-                date_str = datetime.now().strftime("%Y-%m-%d")
+                date_str = self._get_logical_date(datetime.now())
         
         # 再次确保 date_str 是有效的字符串（处理 AI 可能传回的空字符串）
         if not date_str or not date_str.strip():
-            date_str = datetime.now().strftime("%Y-%m-%d")
+            date_str = self._get_logical_date(datetime.now())
+
+        effective_user_ids = self._get_effective_user_ids(date_str)
 
         # 检查是否已经存在该日期的实时记录 JSON
         folder = self.dialog_folder
@@ -1690,7 +2310,7 @@ class LocalReminiscencePlugin(Star):
                 core_db_path = Path.cwd() / "data" / "data_v4.db"
                 if core_db_path.exists():
                     logger.info(f"[APLR] 未找到日期 {date_str} 的记录文件，正在尝试从核心数据库提取...")
-                    for target_user_id in self.target_user_id_list:
+                    for target_user_id in effective_user_ids:
                         clean_dialogue_with_different_limits(
                             db_path=core_db_path,
                             output_dir=self.dialog_folder,
@@ -1698,7 +2318,8 @@ class LocalReminiscencePlugin(Star):
                             ai_name=self.ai_name,
                             platform="AstrBot",
                             target_date=date_str,
-                            target_user_id=target_user_id
+                            target_user_id=target_user_id,
+                            day_boundary_config=self.config.get("day_boundary_config", {})
                         )
             except Exception as e:
                 logger.error(f"保底提取聊天记录失败: {e}")
@@ -1706,7 +2327,10 @@ class LocalReminiscencePlugin(Star):
         try:
             datetime.strptime(date_str, "%Y-%m-%d")
         except ValueError:
-            yield event.plain_result("日期格式好像不对哦，记得用 YYYY-MM-DD 这种格式~")
+            if event:
+                yield event.plain_result("日期格式好像不对哦，记得用 YYYY-MM-DD 这种格式~")
+            else:
+                logger.error(f"[APLR] 自动重整回忆任务日期格式不合法: {date_str}")
             return
         
         # 寻找聊天记录文件并合并
@@ -1715,12 +2339,12 @@ class LocalReminiscencePlugin(Star):
         
         max_kb = self.config.get("max_dialogue_kb_per_summary", 40)
         gap_hours = self.config.get("chunk_time_gap_hours", 1.0)
-
+ 
         current_chunk = []
         current_size = 0.0
         last_time = None
-
-        for target_user_id in self.target_user_id_list:
+ 
+        for target_user_id in effective_user_ids:
             safe_id = target_user_id.replace(":", "_") if target_user_id else ""
             dialog_file = self.dialog_folder / f"{date_str}_dialog_{safe_id}.json"
             if not dialog_file.exists():
@@ -1734,7 +2358,8 @@ class LocalReminiscencePlugin(Star):
                         ai_name=self.ai_name,
                         platform="AstrBot",
                         target_date=date_str,
-                        target_user_id=target_user_id
+                        target_user_id=target_user_id,
+                        day_boundary_config=self.config.get("day_boundary_config", {})
                     )
                 except Exception as e:
                     logger.error(f"提取聊天记录失败: {e}")
@@ -1764,8 +2389,29 @@ class LocalReminiscencePlugin(Star):
                         current_chunk = []
                         current_size = 0.0
 
-                    # 添加用户 ID 标识头
-                    header = f"\n=== 对话记录 ({target_user_id}) ===\n"
+                    # 添加包含详细场景元数据的对话提示头，精准指导AI
+                    meta = data.get("metadata", {})
+                    g_name = meta.get("group_name")
+                    n_name = meta.get("nickname")
+                    c_type = meta.get("chat_type")
+                    
+                    # Session ID 判定做双重加固
+                    is_group_by_session = "GroupMessage" in (target_user_id or "")
+                    is_friend_by_session = "FriendMessage" in (target_user_id or "")
+                    specific_id = target_user_id.split(":")[-1] if target_user_id and ":" in target_user_id else (target_user_id or "")
+
+                    if g_name:
+                        info_str = f"群聊：{g_name}"
+                    elif n_name:
+                        info_str = f"与 {n_name} 的私聊"
+                    elif c_type == "group" or is_group_by_session:
+                        info_str = f"群聊 (ID: {specific_id})"
+                    elif c_type == "private" or is_friend_by_session:
+                        info_str = f"私聊 (ID: {specific_id})"
+                    else:
+                        info_str = f"私聊：{target_user_id}"
+
+                    header = f"\n=== 对话场景: [{info_str}] (会话ID: {target_user_id}) ===\n"
                     header_size = len(header.encode('utf-8')) / 1024.0
                     current_chunk.append(header)
                     current_size += header_size
@@ -1788,7 +2434,7 @@ class LocalReminiscencePlugin(Star):
                         # 核心逻辑：如果是小文件，则绝对不在此循环内切分（即挤一挤，不分段）
                         if not is_small_file and len(current_chunk) > 2 and (current_size + msg_size > max_kb) and time_gap_exceeded:
                             conversation_chunks.append("".join(current_chunk))
-                            current_chunk = [f"\n=== 对话记录 ({target_user_id}) (续) ===\n"]
+                            current_chunk = [f"\n=== 对话场景: [{info_str}] (会话ID: {target_user_id}) (续) ===\n"]
                             current_size = len(current_chunk[0].encode('utf-8')) / 1024.0
                         
                         current_chunk.append(msg_text)
@@ -1846,8 +2492,19 @@ class LocalReminiscencePlugin(Star):
         # --- 获取 LLM 提供者并初始化总结器 (新版推荐方式) ---
         try:
             # 1. 获取当前会话的 provider ID
-            umo = event.unified_msg_origin
-            provider_id = await self.context.get_current_chat_provider_id(umo=umo)
+            umo = event.unified_msg_origin if event else None
+            provider_id = None
+            if umo:
+                provider_id = await self.context.get_current_chat_provider_id(umo=umo)
+            
+            # 如果没有 UMO 或 get_current_chat_provider_id 返回 None，尝试获取默认正在使用的提供者 ID
+            if not provider_id:
+                try:
+                    default_provider = self.context.get_using_provider(umo=umo) or self.context.get_using_provider()
+                    if default_provider:
+                        provider_id = default_provider.meta().id
+                except Exception as e:
+                    logger.warning(f"[APLR] 无法通过 get_using_provider 获取默认 LLM ID: {e}")
             
             if not provider_id:
                 logger.info("[APLR] 暂时连接不到大脑（LLM Provider），请检查配置。")
@@ -1868,7 +2525,7 @@ class LocalReminiscencePlugin(Star):
 
             # 注入 Astrbot 自带的人格提示词
             try:
-                persona = await self.context.persona_manager.get_default_persona_v3(umo=umo)
+                persona = await self.context.persona_manager.get_default_persona_v3(umo=umo) if umo else None
                 if persona and persona.get('prompt'):
                     base_system_prompt = (persona['prompt'] + "\n" + base_system_prompt) if base_system_prompt else (persona['prompt'] + "\n")
                     logger.debug(f"[APLR] 已成功注入 Astrbot 自带的人格设定 (Persona: {persona.get('name', 'Unknown')})")
@@ -1878,13 +2535,30 @@ class LocalReminiscencePlugin(Star):
 
             # 4. 初始化总结器
             prompts_config = self.config.get("prompts", {})
+            event_summary_prompt = prompts_config.get("event_summary", "")
+            
+            # 考虑凌晨熬夜分割特判，追加跨日提示词
+            boundary_conf = self.config.get("day_boundary_config", {})
+            boundary_cron = boundary_conf.get("boundary_cron", "0 4 * * *")
+            h, m = self._parse_cron_time(boundary_cron)
+            if 0 <= h < 12:
+                time_str = f"{h:02d}:{m:02d}"
+                owl_hint = (
+                    f"\n\n- **【跨越午夜与凌晨的事件处理重要提醒】**：\n"
+                    f"  本系统设定的一天“跨日分界线”是在每天凌晨的 **{time_str}**。类似于人类深夜不眠、熬夜至次日清晨才算“今天结束”的生活习惯，"
+                    f"  在今日对话记录中凡是发生在半夜 00:00 至凌晨 {time_str} 期间的所有事件和对话（这在日历天上属于“第二天”的凌晨），在主观感官上**完全属于逻辑日期 {date_str} 的延续和深夜活动**。\n"
+                    f"  请你在进行事件提取（events）与总结心得（daily_reflection）时，务必将这些凌晨发生的对话内容也一同视作 {date_str} 这天的一部分进行合并抽象与心理解读。"
+                )
+                event_summary_prompt += owl_hint
+                logger.debug(f"[APLR] 检测到跨日时间在中午12点之前的凌晨 ({time_str})，已成功注入熬夜分界线提示词。")
+
             summarizer = DailySummarizer(
                 llm_generate_func=llm_generate_func,
                 ai_name=self.ai_name,
                 base_system_prompt=base_system_prompt,
                 base_user_prompt=base_user_prompt,
                 search_events_func=self._search_events_for_summary,
-                prompt_event_summary=prompts_config.get("event_summary", ""),
+                prompt_event_summary=event_summary_prompt,
                 prompt_memory_node=prompts_config.get("memory_node", "")
             )
 
@@ -1992,13 +2666,21 @@ class LocalReminiscencePlugin(Star):
                 logger.error(f"[APLR] 自动向量化失败: {ve}")
 
             # 构建回复
-            yield event.plain_result(f"✨ {date_str} 的回忆整理好啦！\n\n")
-            resp = f"💭 我的感悟：{summary.daily_reflection}\n"
-            resp += f"📍 我记下了 {len(summary.events)} 个印象深刻的瞬间。"
-            yield event.plain_result(resp)
+            if event:
+                yield event.plain_result(f"✨ {date_str} 的回忆整理好啦！\n\n")
+                resp = f"💭 我的感悟：{summary.daily_reflection}\n"
+                resp += f"📍 我记下了 {len(summary.events)} 个印象深刻的瞬间。"
+                yield event.plain_result(resp)
+            else:
+                logger.info(f"[APLR] ✨ {date_str} 的回忆自动整理好了！")
+                logger.info(f"[APLR] 我的感悟：{summary.daily_reflection}")
+                logger.info(f"[APLR] 我记下了 {len(summary.events)} 个印象深刻的瞬间。")
         except Exception as e:
             logger.exception("存入数据库失败")
-            yield event.plain_result(f"[APLR] 虽然想起来了，但没能存进记忆库：{e}")
+            if event:
+                yield event.plain_result(f"[APLR] 虽然想起来了，但没能存进记忆库：{e}")
+            else:
+                logger.error(f"[APLR] 自动重整回忆任务存入数据库失败: {e}")
 
     @filter.command("memory_consolidation")
     @filter.permission_type(filter.PermissionType.ADMIN)
