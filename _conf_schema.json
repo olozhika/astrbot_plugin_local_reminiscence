@@ -50,7 +50,7 @@
   "offline_mode": {
     "description": "离线模式",
     "type": "bool",
-    "hint": "开启后将强制只读本地模型缓存，彻底避免联网检查（包括 ChromaDB 遥测和 HuggingFace 下载）。请在确认本插件已正常运行过一次且安装的其他插件都不需要连接HuggingFace时再开启。",
+    "hint": "开启后将强制只读本地模型缓存，彻底避免联网检查（包括 ChromaDB 遥测和 HuggingFace 下载）。请在确认本插件已正常运行过一次且安装的其他插件都不需要连接HuggingFace时再开启。请在更新Astrbot版本前关闭此选项。",
     "default": false
   },
   "model_idle_timeout": {
@@ -62,7 +62,7 @@
   "target_user_id_list": {
     "description": "目标会话 ID 列表",
     "type": "list",
-    "hint": "要提取聊天记录的目标会话ID列表, 可用 sid 指令获取当前对话ID。",
+    "hint": "要提取聊天记录的目标会话ID列表, 可用 sid 指令获取当前对话ID。写all则提取所有聊天记录。",
     "default": ["Lanya_QQ:FriendMessage:947628188"]
   },
   "username": {
@@ -163,7 +163,7 @@
       "boundary_cron": {
         "description": "日期分割时间 (Cron 格式，本地时区)",
         "type": "string",
-        "hint": "形如 '0 4 * * *' (代表凌晨 4:00)，这必须是一个每天只执行一次的 cron 时间点。整理/记录聊天记录时，以此时间作为新一天的分割处。",
+        "hint": "形如 '0 4 * * *' (代表凌晨 4:00)，这必须是一个每天只执行一次的 cron 时间点。整理/记录聊天记录时，以此时间作为新一天的分割处。不建议在此时间后10min内与LLM交流。",
         "default": "55 23 * * *"
       },
       "auto_summary_enabled": {
@@ -175,7 +175,7 @@
       "auto_end_session": {
         "description": "是否自动结束/重置上下文会话",
         "type": "bool",
-        "hint": "开启后，系统将在用户定义的分界时刻 (boundary_cron) +9 分钟时自动关闭/清空所有激活中的会话历史，让第二天从全新上下文空对话开始，防止记忆臃肿。",
+        "hint": "开启后，系统将在用户定义的分界时刻 (boundary_cron) +9 分钟时自动关闭所有活跃对话，让第二天从全新上下文空对话开始，防止记忆臃肿。本功能不会删除 astrbot-更多功能-对话历史 中的任何内容。",
         "default": false
       },
       "insert_cron_to_chat_history": {
