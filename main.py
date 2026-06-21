@@ -1590,7 +1590,7 @@ class LocalReminiscencePlugin(Star):
 
     @llm_tool(name="recall_memory_tool")
     async def recall_memory_tool(self, event: AstrMessageEvent, query: str = "", count: int = 0) -> str:
-        """根据输入文本从你的长期记忆中检索最相关的事件。当你需要回忆过去发生的事情时使用。
+        """根据输入文本从你的长期记忆中检索最相关的事件。当你需要回忆过去发生的事情时使用。每次只能查询一件事。
         
         Args:
             query(string): 文本描述。
@@ -1884,7 +1884,7 @@ class LocalReminiscencePlugin(Star):
 
     @llm_tool(name="recall_node_tool")
     async def recall_node_tool(self, event: AstrMessageEvent, name: str) -> str:
-        """搜索某个特定的记忆节点（如人物、地点、核心概念）。当你需要了解某个特定对象或概念的背景信息时使用。
+        """搜索某个特定的记忆节点（如人物、地点、核心概念）。当你需要了解某个特定对象或概念的背景信息时使用。每次只能查询一个关键词（即1个节点）。
         
         Args:
             name(string): 要搜索的节点名称。
