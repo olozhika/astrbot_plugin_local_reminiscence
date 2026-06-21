@@ -29,6 +29,7 @@ class LocalReminiscencePlugin(Star):
     _last_summary_run_time = None
     _last_close_run_time = None
     _active_cron_records = {}
+    _running_summaries = set()
 
     def __init__(self, context: Context, config: any = None):
         super().__init__(context)
@@ -140,6 +141,21 @@ class LocalReminiscencePlugin(Star):
         )
         
         # 启动背景检测任务并且管理旧任务防止热重载重复运行
+        try:
+            curr_task = asyncio.current_task()
+            for task in asyncio.all_tasks():
+                if task == curr_task:
+                    continue
+                try:
+                    t_name = task.get_name()
+                    if t_name and t_name.startswith("APLR_"):
+                        task.cancel()
+                        logger.debug(f"[APLR] 检测并通过全局 event loop 取消已存在的后台任务: {t_name}")
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning(f"[APLR] 扫描并取消全局残留后台任务时异常: {e}")
+
         while self.__class__._bg_tasks:
             old_task = self.__class__._bg_tasks.pop()
             if not old_task.done():
@@ -324,6 +340,11 @@ class LocalReminiscencePlugin(Star):
             logger.error(f"[APLR] 自动结束/重置所有会话上下文时发生异常: {e}", exc_info=True)
 
     async def _run_automatic_daily_summary(self, target_date: str):
+        if target_date in self.__class__._running_summaries:
+            logger.info(f"[APLR] 已经有一个自动每日总结任务正在运行该日期: {target_date}，跳过并发重复运行。")
+            return
+            
+        self.__class__._running_summaries.add(target_date)
         logger.info(f"[APLR] 开始执行自动每日总结，日期: {target_date}")
         try:
             async for result in self._daily_summary_logic(event=None, date_str=target_date):
@@ -332,6 +353,8 @@ class LocalReminiscencePlugin(Star):
             logger.info(f"[APLR] 自动每日总结执行完毕，日期: {target_date}")
         except Exception as e:
             logger.error(f"[APLR] 自动每日总结执行遭遇异常: {e}", exc_info=True)
+        finally:
+            self.__class__._running_summaries.discard(target_date)
 
     async def _model_idle_check_loop(self):
         """向量模型闲置检测循环"""
@@ -664,28 +687,7 @@ class LocalReminiscencePlugin(Star):
             current_nickname = None
             current_group_name = None
             
-            actual_event = getattr(event, 'event', event)
-            message_obj = getattr(actual_event, 'message_obj', None)
-            
-            # 路径 A：优先从 AstrBot 原生的 message_obj 中直接提取其内存化实体属性（极度精准，杜绝文本正则表达式的失误）
-            if message_obj:
-                sender = getattr(message_obj, 'sender', None)
-                if sender:
-                    for attr in ['nickname', 'card', 'name']:
-                        val = getattr(sender, attr, None)
-                        if val and str(val).strip():
-                            current_nickname = str(val).strip()
-                            break
-                    if not current_nickname and hasattr(sender, 'user_id'):
-                        current_nickname = str(sender.user_id).strip()
-                        
-                group = getattr(message_obj, 'group', None)
-                if group and hasattr(group, 'group_name'):
-                    g_name = getattr(group, 'group_name', None)
-                    if g_name and str(g_name).strip():
-                        current_group_name = str(g_name).strip()
-
-            # 路径 B：辅助/兜底，多阶全文扫描含有 <system_reminder> 标签或普通结构文本的字段
+            # 路径 A：优先收集所有相关的文本搜索空间，以便优先定位 <system_reminder> 标签（前置插件修改常存留于此）
             texts_to_search = []
             if message_str:
                 texts_to_search.append(message_str)
@@ -707,7 +709,7 @@ class LocalReminiscencePlugin(Star):
                         if part_text:
                             texts_to_search.append(part_text)
 
-            # 解析并提取
+            # 1. 第一级优先级：优先从 <system_reminder> 标签中获取（前置插件最常通过该标签写入最新/已被修改的用户昵称）
             for text_val in texts_to_search:
                 if not isinstance(text_val, str):
                     continue
@@ -718,22 +720,54 @@ class LocalReminiscencePlugin(Star):
                         nick_match = re.search(r'Nickname:\s*([^\n\r,<>]+)', tag_content, re.IGNORECASE)
                         if nick_match:
                             current_nickname = nick_match.group(1).strip()
-                            logger.debug(f"[APLR] 从标签中提取 Nickname 成功: {current_nickname}")
+                            logger.info(f"[APLR] 优先从 system_reminder 标签提取 Nickname 成功: {current_nickname}")
                     if not current_group_name:
                         group_match = re.search(r'Group name:\s*([^\n\r,<>]+)', tag_content, re.IGNORECASE)
                         if group_match:
                             current_group_name = group_match.group(1).strip()
-                            logger.debug(f"[APLR] 从标签中提取 Group Name 成功: {current_group_name}")
+                            logger.info(f"[APLR] 优先从 system_reminder 标签提取 Group Name 成功: {current_group_name}")
 
-                # 全文正则表达式兜底（防止未包裹在 system_reminder 标签中）
-                if not current_nickname:
-                    nick_match = re.search(r'Nickname:\s*([^\n\r,<>]+)', text_val, re.IGNORECASE)
-                    if nick_match:
-                        current_nickname = nick_match.group(1).strip()
-                if not current_group_name:
-                    group_match = re.search(r'Group name:\s*([^\n\r,<>]+)', text_val, re.IGNORECASE)
-                    if group_match:
-                        current_group_name = group_match.group(1).strip()
+            # 2. 第二级优先级：如果 <system_reminder> 中没有提取到，作为备用方案从 AstrBot 原生 message_obj 实体中提取
+            if not current_nickname or not current_group_name:
+                actual_event = getattr(event, 'event', event)
+                message_obj = getattr(actual_event, 'message_obj', None)
+                if message_obj:
+                    if not current_nickname:
+                        sender = getattr(message_obj, 'sender', None)
+                        if sender:
+                            for attr in ['nickname', 'card', 'name']:
+                                val = getattr(sender, attr, None)
+                                if val and str(val).strip():
+                                    current_nickname = str(val).strip()
+                                    logger.debug(f"[APLR] 作为备用从 message_obj 提取 Nickname 成功: {current_nickname}")
+                                    break
+                            if not current_nickname and hasattr(sender, 'user_id'):
+                                current_nickname = str(sender.user_id).strip()
+                                logger.debug(f"[APLR] 作为备用从 user_id 提取 Nickname 成功: {current_nickname}")
+                                
+                    if not current_group_name:
+                        group = getattr(message_obj, 'group', None)
+                        if group and hasattr(group, 'group_name'):
+                            g_name = getattr(group, 'group_name', None)
+                            if g_name and str(g_name).strip():
+                                current_group_name = str(g_name).strip()
+                                logger.debug(f"[APLR] 作为备用从 message_obj 提取 Group Name 成功: {current_group_name}")
+
+            # 3. 第三级优先级：最末级全文正则表达式兜底（防止未包裹在 system_reminder 标签中的普通文本）
+            if not current_nickname or not current_group_name:
+                for text_val in texts_to_search:
+                    if not isinstance(text_val, str):
+                        continue
+                    if not current_nickname:
+                        nick_match = re.search(r'Nickname:\s*([^\n\r,<>]+)', text_val, re.IGNORECASE)
+                        if nick_match:
+                            current_nickname = nick_match.group(1).strip()
+                            logger.debug(f"[APLR] 兜底从全文正则提取 Nickname 成功: {current_nickname}")
+                    if not current_group_name:
+                        group_match = re.search(r'Group name:\s*([^\n\r,<>]+)', text_val, re.IGNORECASE)
+                        if group_match:
+                            current_group_name = group_match.group(1).strip()
+                            logger.debug(f"[APLR] 兜底从全文正则提取 Group Name 成功: {current_group_name}")
 
             if not current_nickname:
                 logger.debug(f"[APLR] 无法从消息中提取 Nickname")
@@ -780,7 +814,7 @@ class LocalReminiscencePlugin(Star):
 
                 if user_nodes:
                     node = user_nodes[0]
-                    logger.debug(f"[APLR] 找到用户节点: {node['name']} (ID: {node['id']})")
+                    logger.debug(f"[APLR] 找到用户节点: {node['name']} (类型: {node['type']})")
                     node['is_user'] = True # 标记为当前聊天对象
                     all_nodes.append(node)
                     seen_names.add(node['name'])
@@ -813,7 +847,7 @@ class LocalReminiscencePlugin(Star):
                 if group_nodes:
                     node = group_nodes[0]
                     if node['name'] not in seen_names:
-                        logger.debug(f"[APLR] 找到群聊节点: {node['name']} (ID: {node['id']})")
+                        logger.debug(f"[APLR] 找到群聊节点: {node['name']} (类型: {node['type']})")
                         node['is_group'] = True # 标记为当前群聊空间
                         all_nodes.append(node)
                         seen_names.add(node['name'])
@@ -984,34 +1018,41 @@ class LocalReminiscencePlugin(Star):
             if not session_curr_cid:
                 session_curr_cid = await conv_mgr.new_conversation(umo)
                 
-            conv = await conv_mgr.get_conversation(umo, session_curr_cid)
-            if not conv:
-                logger.warning(f"[APLR] 无法获取或创建 cron job 对应的会话: {session_curr_cid}")
-                return
-                
-            # Load the current history
-            history = []
-            if conv.history:
+            async def delayed_insert_cron():
+                await asyncio.sleep(0.5)
                 try:
-                    history = json.loads(conv.history)
-                except Exception as exc:
-                    logger.warning(f"[APLR] 无法解析官方会话 {conv.cid} 历史: {exc}")
+                    conv = await conv_mgr.get_conversation(umo, session_curr_cid)
+                    if not conv:
+                        logger.warning(f"[APLR] 无法获取或创建 cron job 对应的会话: {session_curr_cid}")
+                        return
+                        
+                    # Load the current history
                     history = []
-                
-            # Append each record to history
-            for record in records:
-                history.append({
-                    "role": record["role"],
-                    "content": record["content"]
-                })
-                
-            # Update the official conversation store
-            await conv_mgr.update_conversation(
-                unified_msg_origin=umo,
-                conversation_id=conv.cid,
-                history=history
-            )
-            logger.info(f"[APLR] 成功将 {len(records)} 条 Cron Job 完整交互记录写入 {conv.cid} 官方聊天记录数据库")
+                    if conv.history:
+                        try:
+                            history = json.loads(conv.history)
+                        except Exception as exc:
+                            logger.warning(f"[APLR] 无法解析官方会话 {conv.cid} 历史: {exc}")
+                            history = []
+                        
+                    # Append each record to history
+                    for record in records:
+                        history.append({
+                            "role": record["role"],
+                            "content": record["content"]
+                        })
+                        
+                    # Update the official conversation store
+                    await conv_mgr.update_conversation(
+                        unified_msg_origin=umo,
+                        conversation_id=conv.cid,
+                        history=history
+                    )
+                    logger.info(f"[APLR] 成功将 {len(records)} 条 Cron Job 完整交互记录延迟并写入 {conv.cid} 官方聊天记录数据库")
+                except Exception as ex:
+                    logger.error(f"[APLR] 延迟将 Cron Job 完整交互日志写入自带聊天记录失败: {ex}", exc_info=True)
+
+            asyncio.create_task(delayed_insert_cron())
         except Exception as e:
             logger.error(f"[APLR] 将 Cron Job 完整交互日志写入自带聊天记录失败: {e}", exc_info=True)
 
