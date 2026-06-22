@@ -10,7 +10,7 @@ A lightweight local memory plugin for AstrBot that uses local embedding models a
 
 1. 每日总结自定义日期分隔
     - 比如可以把每天早上4点到第二天凌晨4点算作“今天”，利好熬夜人群
-    - 支持在日期分割点自动触发每日总结
+    - 支持在日期分割点自动触发每日总结（用了这个就不用cron job或手动触发总结了）
     - 支持在日期分割点自动关闭所有活跃会话，第二天自动开启新对话，避免上下文积攒过长
 2. 优化自动实时读聊天记录的方式
     - 但是，建议优先**不**使用实时记录
@@ -19,6 +19,7 @@ A lightweight local memory plugin for AstrBot that uses local embedding models a
 4. 记忆节点唤起时增加了对于群聊名称的额外唤起，让AI更了解自己在哪里聊天
 5. 优化每日总结给予AI聊天记录时对于当前session的描述
 6. 插件设置`目标会话 ID 列表`如果写`all`将会在每日总结环节中使用所有session的聊天记录
+7. 优化`recall_node_tool`和`recall_memory_tool`描述，降低部分LLM不查记忆直接覆写记忆节点的风险
 
 #### 老用户升级
 
@@ -206,7 +207,8 @@ To use this plugin, you must perform the first three steps!
 3.  **设置每日总结 / Daily Summary**
     - 定时任务方式：比如你每天通常在晚上11点50关机，就告诉你的AI“设一个定时任务，每天晚上11点45使用工具daily_summary_tool，日期参数写当天日期”（具体表述随意）
     - 手动触发方式：每天晚上关机前在AI聊天框输入 /daily_summary_command YYYY-MM-DD (此处日期是今日日期)
-    - 上面两种方式二选一
+    - 插件自动触发：在插件的`自定义日期分割与自动总结配置`这一部分开启'自动触发每日总结'
+    - 上面方式三选一。注意：如果你设置的日期分割点在凌晨（如夜里1点），YYYY-MM-DD应写现实意义上的"昨天"的日期，因为相当于把凌晨多的这几小时当做"昨天"的延伸
 
 4.  [可选] **向记忆数据库中导入过往聊天记录**
     - 使用指令`/daily_summary_command [YYYY-MM-DD]` 依次补录相应日期记忆。所以即使你刚刚下载本插件，但已经和一个AI聊了很长时间（而且没删Astrbot中的对话数据），你可以用此指令把它们统统依次补录！该指令会自动找到全部该日聊天记录，进行整理总结，向量化重要事件，并更新记忆节点。
