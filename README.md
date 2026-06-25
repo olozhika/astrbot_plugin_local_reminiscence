@@ -295,7 +295,8 @@ To use this plugin, you must perform the first three steps!
 
 ## Also see
 
-**[聊天数据数据库生成器](https://github.com/olozhika/local_reminiscence_generator)**: *暂时别用！作者还没测试！*独立Python程序，使用用户提供的微信、QQ等聊天记录，使用LLM批量提取事件，整理为满足本插件 本地回忆[APLR] 格式的数据库文件，实现网聊记忆数据化。适合用AI帮自己管理记忆或者人格切片、数字飞升等情形（这对吗）
+**[聊天数据数据库生成器](https://github.com/olozhika/local_reminiscence_generator)**: 独立Python程序，使用用户提供的微信、QQ等聊天记录，使用LLM批量提取事件，整理为满足本插件 本地回忆[APLR] 格式的数据库文件，实现网聊记忆数据化。适合用AI帮自己管理记忆或者人格切片、数字飞升等情形（这对吗）
+**[群聊增强APEG](https://github.com/olozhika/astrbot_plugin_enhanced_groupchat)**: 根据人类行为设计的AstrBot群聊交互强化插件。避免传统聊天机器人“必须被 @ 或输入特定指令/前缀才回复”的单向死板交互模式，引入了非触发闲聊、多群独立概率、连续窥屏追击、智能上下文消息裁剪等高级行为逻辑，让大模型在群聊中呈现出更加自然、生动、且兼顾成本控制的人性化互动。
 
 ## 📄 To Do List
 
