@@ -57,6 +57,11 @@ def clean_dialogue_with_different_limits(
         target_user_id=None,
         day_boundary_config: dict = None
     ):
+    """从 AstrBot 核心数据库提取对话并按日期输出 dialog 文件。
+
+    返回值: int —— 实际输出到文件的消息条数（0 表示该用户在该日无记录）。
+    异常: db_path 不存在或 SQL 执行失败时抛出异常，绝不静默失败。
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
 
     h, m = 0, 0
@@ -75,8 +80,7 @@ def clean_dialogue_with_different_limits(
             pass
 
     if not db_path.exists():
-        print(f"❌ 数据库不存在: {db_path}")
-        return
+        raise FileNotFoundError(f"❌ 数据库不存在: {db_path}")
 
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
@@ -88,14 +92,13 @@ def clean_dialogue_with_different_limits(
             cursor.execute("SELECT content FROM conversations")
         rows = cursor.fetchall()
     except Exception as e:
-        print(f"❌ 读取数据库失败: {e}")
-        return
+        raise RuntimeError(f"❌ 读取数据库失败: {e}")
     finally:
         conn.close()
     
     if not rows:
         print(f"⚠️ 没有找到用户 {target_user_id} 的聊天记录")
-        return
+        return 0
 
     daily_txt = defaultdict(list)
     daily_json = defaultdict(list)
@@ -337,6 +340,7 @@ def clean_dialogue_with_different_limits(
                     })
 
     # 输出文件
+    extracted_count = 0
     for date_key, messages in daily_json.items():
         if not messages:
             continue
@@ -402,4 +406,7 @@ def clean_dialogue_with_different_limits(
         with open(output_json, "w", encoding="utf-8", errors="replace") as f:
             json.dump(json_output, f, ensure_ascii=False, indent=2)
 
+        extracted_count += len(messages)
         print(f"📄 已输出：{output_json}")
+
+    return extracted_count

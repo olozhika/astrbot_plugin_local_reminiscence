@@ -140,6 +140,8 @@ class MemoryDB:
                         type = excluded.type,
                         description = excluded.description,
                         last_updated = CURRENT_TIMESTAMP
+                    WHERE excluded.description IS NOT nodes.description
+                       OR excluded.type IS NOT nodes.type
                 """, (node.name, node.type, node.description))
             conn.commit()
 
@@ -171,6 +173,8 @@ class MemoryDB:
                             type = excluded.type,
                             description = excluded.description,
                             last_updated = CURRENT_TIMESTAMP
+                        WHERE excluded.description IS NOT nodes.description
+                           OR excluded.type IS NOT nodes.type
                     """, (node.name, node.type, node.description))
 
             # 删除冗余节点
@@ -422,7 +426,10 @@ class MemoryDB:
             if include_description:
                 where_clause += " OR LOWER(description) LIKE ?"
                 params.append(f"%{lower_query}%")
-                
+
+            # 防僵尸节点：排除"标记删除"的节点（描述被改成删除标记但条目仍在库中，会被误召回导致已删内容复活）
+            where_clause = f"({where_clause}) AND (description IS NULL OR (description NOT LIKE '已删除%' AND description NOT LIKE '（节点已彻底移除%'))"
+
             # 添加排序参数
             params.extend([lower_query, f"{lower_query}%", f"%{lower_query}%", limit])
             

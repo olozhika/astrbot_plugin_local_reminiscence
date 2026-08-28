@@ -98,6 +98,19 @@ class LocalReminiscencePlugin(Star):
         vector_db_path_rel = self.config.get("vector_db_path", "APLR_VectorDB")
 
         data_dir = StarTools.get_data_dir("astrbot_plugin_local_reminiscence")
+
+        # AstrBot 核心数据库 (data_v4.db) 定位：
+        # 插件数据目录位于 <AstrBot>/data/plugin_data/<插件名>，向上两级即 AstrBot 的 data 根目录。
+        # 不能依赖 Path.cwd()：指令由聊天触发时进程 cwd 是沙盒 workspaces 目录而非 AstrBot 根目录。
+        data_root = data_dir.parent.parent
+        core_db_candidates = [
+            data_root / "data_v4.db",
+            Path.cwd() / "data" / "data_v4.db",
+        ]
+        self.core_db_path = next((p for p in core_db_candidates if p.exists()), core_db_candidates[0])
+        self.data_root = data_root
+
+        # 路径解析逻辑：优先考虑绝对路径，否则相对于插件数据目录
         
         # 路径解析逻辑：优先考虑绝对路径，否则相对于插件数据目录
         def resolve_path(path_str, data_path):
@@ -397,7 +410,7 @@ class LocalReminiscencePlugin(Star):
             # 2. 从核心数据库获取所有用户 ID（用于未开启实时录制但需提取全部的情况）
             try:
                 import sqlite3
-                core_db_path = Path.cwd() / "data" / "data_v4.db"
+                core_db_path = self.core_db_path
                 if core_db_path.exists():
                     conn = sqlite3.connect(str(core_db_path))
                     cursor = conn.cursor()
@@ -1008,7 +1021,8 @@ class LocalReminiscencePlugin(Star):
             if not records:
                 return
                 
-            umo = getattr(event, 'unified_msg_origin', None)
+            _e1 = getattr(event, 'event', event)
+            umo = getattr(_e1, 'unified_msg_origin', None)
             if not umo:
                 logger.warning("[APLR] 无法获取 cron job 事件的消息来源，跳过插入官方聊天记录")
                 return
@@ -1284,10 +1298,15 @@ class LocalReminiscencePlugin(Star):
         yield event.plain_result(f"正在提取 {date_str} 的聊天记录...")
         
         try:
-            core_db_path = Path.cwd() / "data" / "data_v4.db"
+            core_db_path = self.core_db_path
+            if not core_db_path.exists():
+                yield event.plain_result(f"❌ 未找到 AstrBot 核心数据库: {core_db_path}\n无法提取聊天记录，请检查 AstrBot 数据目录结构。")
+                return
+
             effective_ids = self._get_effective_user_ids(date_str)
+            extracted_users, empty_users = [], []
             for target_user_id in effective_ids:
-                clean_dialogue_with_different_limits(
+                msg_count = clean_dialogue_with_different_limits(
                     db_path=core_db_path,
                     output_dir=self.dialog_folder,
                     username=self.username,
@@ -1297,7 +1316,20 @@ class LocalReminiscencePlugin(Star):
                     target_user_id=target_user_id,
                     day_boundary_config=self.config.get("day_boundary_config", {})
                 )
-            yield event.plain_result(f"✅ 已成功提取 {date_str} 的聊天记录。")
+                safe_id = target_user_id.replace(":", "_") if target_user_id else ""
+                dialog_file = self.dialog_folder / f"{date_str}_dialog_{safe_id}.json"
+                if msg_count and dialog_file.exists():
+                    extracted_users.append(f"{target_user_id} ({msg_count} 条)")
+                else:
+                    empty_users.append(target_user_id)
+
+            if extracted_users:
+                msg = f"✅ 已成功提取 {date_str} 的聊天记录：\n" + "\n".join(f"- {u}" for u in extracted_users)
+                if empty_users:
+                    msg += "\n⚠️ 以下会话在该日没有聊天记录：\n" + "\n".join(f"- {u}" for u in empty_users)
+                yield event.plain_result(msg)
+            else:
+                yield event.plain_result(f"⚠️ 数据库中未找到 {date_str} 任何会话的聊天记录，未生成文件。\n可能该日各会话均无对话。")
         except Exception as e:
             logger.error(f"提取聊天记录失败: {e}")
             yield event.plain_result(f"❌ 提取聊天记录失败: {e}")
@@ -1493,7 +1525,8 @@ class LocalReminiscencePlugin(Star):
         
         try:
             # 初始化总结器 (需要 LLM Provider)
-            umo = event.unified_msg_origin
+            actual_e2 = getattr(event, 'event', event)
+            umo = getattr(actual_e2, 'unified_msg_origin', None)
             provider_id = await self.context.get_current_chat_provider_id(umo=umo)
             if not provider_id:
                 yield event.plain_result("❌ 暂时连接不到大脑（LLM Provider），请检查配置。")
@@ -1572,15 +1605,15 @@ class LocalReminiscencePlugin(Star):
         msg = event.message_str.strip()
         # 移除可能的斜杠和命令名部分
         content = re.sub(r'^/?APLR_recall\s+memory\s*', '', msg).strip()
-        
-        if not msg:
+
+        if not content:
             yield event.plain_result("请输入要检索的内容。")
             return
-        
+
         # 尝试解析末尾的数字作为条数
-        parts = msg.split()
+        parts = content.split()
         count = None
-        query = msg
+        query = content
         if len(parts) > 1 and parts[-1].isdigit():
             count = int(parts[-1])
             query = " ".join(parts[:-1])
@@ -2307,7 +2340,7 @@ class LocalReminiscencePlugin(Star):
         if not has_local_json:
             try:
                 # 核心数据库通常位于 data/data_v4.db
-                core_db_path = Path.cwd() / "data" / "data_v4.db"
+                core_db_path = self.core_db_path
                 if core_db_path.exists():
                     logger.info(f"[APLR] 未找到日期 {date_str} 的记录文件，正在尝试从核心数据库提取...")
                     for target_user_id in effective_user_ids:
@@ -2350,7 +2383,7 @@ class LocalReminiscencePlugin(Star):
             if not dialog_file.exists():
                 # 如果没找到，尝试提取一次（可能是补录历史记录）
                 try:
-                    core_db_path = Path.cwd() / "data" / "data_v4.db"
+                    core_db_path = self.core_db_path
                     clean_dialogue_with_different_limits(
                         db_path=core_db_path,
                         output_dir=self.dialog_folder,
@@ -2470,7 +2503,7 @@ class LocalReminiscencePlugin(Star):
 
         # 在发送给总结器之前，尝试注入 thoughts 插件的中期记忆
         if conversation_chunks:
-            thoughts_data_path = Path.cwd() / "data" / "plugin_data" / "astrbot_plugin_thoughts" / "interim_memory.json"
+            thoughts_data_path = self.data_root / "plugin_data" / "astrbot_plugin_thoughts" / "interim_memory.json"
             if thoughts_data_path.exists():
                 try:
                     with open(thoughts_data_path, "r", encoding="utf-8") as f:
@@ -2485,6 +2518,8 @@ class LocalReminiscencePlugin(Star):
 
         if not found_any:
             logger.info(f"[APLR] 没找到 {date_str} 的任何聊天记录，是不是那天没说话呀？")
+            if event:
+                yield event.plain_result(f"⚠️ 没找到 {date_str} 的任何聊天记录，无法总结。\n可能该日各会话均无对话，或本地记录文件缺失且从核心数据库提取失败（可在 AstrBot 日志中搜索 APLR 排查）。")
             return
 
         logger.info(f"[APLR] 正在总结 {date_str} 的点点滴滴，分成了 {len(conversation_chunks)} 段处理，稍等一下哦...")
@@ -2492,7 +2527,8 @@ class LocalReminiscencePlugin(Star):
         # --- 获取 LLM 提供者并初始化总结器 (新版推荐方式) ---
         try:
             # 1. 获取当前会话的 provider ID
-            umo = event.unified_msg_origin if event else None
+            actual_e3 = getattr(event, 'event', event) if event else None
+            umo = getattr(actual_e3, 'unified_msg_origin', None) if actual_e3 else None
             provider_id = None
             if umo:
                 provider_id = await self.context.get_current_chat_provider_id(umo=umo)
@@ -2689,7 +2725,8 @@ class LocalReminiscencePlugin(Star):
         yield event.plain_result("🚀 正在启动全局记忆主题归类（大固化），这可能需要较长时间，请耐心等待...")
         
         try:
-            umo = event.unified_msg_origin
+            actual_e4 = getattr(event, 'event', event)
+            umo = getattr(actual_e4, 'unified_msg_origin', None)
             provider_id = await self.context.get_current_chat_provider_id(umo=umo)
             if not provider_id:
                 yield event.plain_result("❌ 暂时连接不到大脑（LLM Provider），请检查配置。")
@@ -2759,14 +2796,14 @@ class LocalReminiscencePlugin(Star):
         else:
             themes = self.db.get_all_thematic_memories()
             if not themes:
-                yield event.plain_result("目前还没有固化的主题记忆，请先执行 /big_consolidation")
+                yield event.plain_result("目前还没有固化的主题记忆，请先执行 /memory_consolidation")
                 return
             
             resp = f"📂 **已固化的主题记忆 ({len(themes)} 个):**\n\n"
             for t in themes:
                 resp += f"🔹 **{t['theme_id']}** ({t['event_count']} 条事件)\n"
                 resp += f"   摘要: {t['summary'][:50]}...\n"
-            resp += "\n使用 `/recall_theme_command [主题ID]` 查看详情。"
+            resp += "\n使用 `/APLR_recall theme [主题ID]` 查看详情。"
             yield event.plain_result(resp)
 
     async def terminate(self):
