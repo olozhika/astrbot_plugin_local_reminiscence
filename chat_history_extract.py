@@ -1,0 +1,435 @@
+import re
+import os
+import json
+import sqlite3
+import sys
+from datetime import datetime
+from collections import defaultdict
+from pathlib import Path
+
+
+def decode_json_unicode(s):
+    try:
+        return json.loads(s)
+    except Exception:
+        return s
+
+
+def decode_unicode_escapes(s):
+    """
+    将字符串中的 \\uXXXX 转义序列转换为实际 Unicode 字符。
+    针对代理对（Surrogates）进行了特殊处理，避免产生孤立代理导致 UTF-8 编码失败。
+    """
+    if not isinstance(s, str):
+        return s
+
+    def replace_unicode(match):
+        code_str = match.group(1)
+        try:
+            code = int(code_str, 16)
+            # 如果是代理区字符 (U+D800 - U+DFFF)，直接返回原字符串
+            # 避免产生孤立代理导致后续 utf-8 编码报错
+            if 0xD800 <= code <= 0xDFFF:
+                return match.group(0)
+            return chr(code)
+        except ValueError:
+            return match.group(0)
+
+    return re.sub(r"\\u([0-9a-fA-F]{4})", replace_unicode, s)
+
+
+def get_date_key(ts):
+    if ts is None:
+        return "unknown_date"
+    ts_norm = ts.replace(" ", "T")
+    try:
+        dt = datetime.fromisoformat(ts_norm)
+        return dt.date().isoformat()
+    except Exception:
+        return ts.split(" ")[0].split("T")[0]
+
+
+def clean_dialogue_with_different_limits(
+    db_path: Path,
+    output_dir: Path,
+    username="olozhika",
+    ai_name="Lanya",
+    max_user_chars=1000,
+    max_assistant_chars=2000,
+    platform="AstrBot",
+    target_date=None,
+    target_user_id=None,
+    day_boundary_config: dict = None,
+):
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    h, m = 0, 0
+    has_boundary = False
+    if day_boundary_config:
+        boundary_cron = day_boundary_config.get("boundary_cron", "0 0 * * *")
+        try:
+            parts = boundary_cron.strip().split()
+            if len(parts) >= 2:
+                mm = int(parts[0])
+                hh = int(parts[1])
+                if 0 <= mm < 60 and 0 <= hh < 24:
+                    h, m = hh, mm
+                    has_boundary = True
+        except Exception:
+            pass
+
+    if not db_path.exists():
+        print(f"❌ 数据库不存在: {db_path}")
+        return
+
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        cursor = conn.cursor()
+        if target_user_id:
+            cursor.execute(
+                "SELECT content FROM conversations WHERE user_id = ?", (target_user_id,)
+            )
+        else:
+            cursor.execute("SELECT content FROM conversations")
+        rows = cursor.fetchall()
+    except Exception as e:
+        print(f"❌ 读取数据库失败: {e}")
+        return
+    finally:
+        conn.close()
+
+    if not rows:
+        print(f"⚠️ 没有找到用户 {target_user_id} 的聊天记录")
+        return
+
+    daily_txt = defaultdict(list)
+    daily_json = defaultdict(list)
+    daily_meta = defaultdict(dict)
+
+    def extract_timestamp(text):
+        if not text:
+            return None
+        match = re.search(r"Current datetime:\s*([0-9:\-\sT]+)\s*\(.*?\)", text)
+        if match:
+            return match.group(1).strip()
+        match = re.search(r"triggered at\s*([0-9:\-\sT\.\+]+)", text)
+        if match:
+            return match.group(1).strip()
+        return None
+
+    def extract_nickname(text):
+        if not text:
+            return None
+        match = re.search(r"Nickname:\s*([^\n\r,<>]+)", text, re.IGNORECASE)
+        return match.group(1).strip() if match else None
+
+    def extract_group_name(text):
+        if not text:
+            return None
+        match = re.search(r"Group name:\s*([^\n\r,<>]+)", text, re.IGNORECASE)
+        return match.group(1).strip() if match else None
+
+    def is_metadata_block(text):
+        return "<system_reminder>" in text
+
+    # 错误关键词列表（按长度降序，优先匹配更具体的）
+    error_keywords = [
+        "permission denied",
+        "cannot open directory",
+        "unable to",
+        "command not found",
+        "no such file",
+        "is a directory",
+        "not a directory",
+        "invalid",
+        "exception",
+        "traceback",
+        "error",
+        "fail",
+        "denied",
+    ]
+    error_re = re.compile(
+        "|".join(re.escape(kw) for kw in error_keywords), re.IGNORECASE
+    )
+
+    for row in rows:
+        row_content = decode_json_unicode(row["content"])
+        if not isinstance(row_content, list):
+            continue
+
+        initial_timestamp = None
+        for turn in row_content:
+            cs = turn.get("content")
+            if isinstance(cs, list):
+                for b in cs:
+                    t = b.get("text", "") if isinstance(b, dict) else str(b)
+                    initial_timestamp = extract_timestamp(t)
+                    if initial_timestamp:
+                        break
+            elif isinstance(cs, str):
+                initial_timestamp = extract_timestamp(cs)
+            if initial_timestamp:
+                break
+
+        timestamp = initial_timestamp
+        for turn in row_content:
+            role = turn.get("role")
+            contents = turn.get("content")
+            tool_calls = turn.get("tool_calls")
+
+            if not role:
+                continue
+            if contents is None and not tool_calls:
+                continue
+
+            text_messages = []
+            turn_nickname = None
+            turn_group_name = None
+
+            def process_content_item(item):
+                nonlocal timestamp, turn_nickname, turn_group_name
+                is_think = False
+                if isinstance(item, str):
+                    text = item
+                elif isinstance(item, dict):
+                    item_type = item.get("type")
+                    if item_type in ["text", "plain"]:
+                        text = item.get("text", "")
+                    elif item_type == "think":
+                        text = item.get("think", "")
+                        is_think = True
+                    else:
+                        return
+                else:
+                    return
+                ts = extract_timestamp(text)
+                if ts:
+                    timestamp = ts
+                nick = extract_nickname(text)
+                if nick:
+                    turn_nickname = nick
+                gname = extract_group_name(text)
+                if gname:
+                    turn_group_name = gname
+                if not is_metadata_block(text):
+                    if is_think:
+                        if text.strip():
+                            text_messages.append(f"(思考: {text.strip()})")
+                    else:
+                        marker = "I finished this job, here is the result:"
+                        if marker in text:
+                            text = text.split(marker, 1)[1]
+                        if text.strip():
+                            text_messages.append(text.strip())
+
+            def process_tool_calls_for_actions(calls):
+                if not isinstance(calls, list):
+                    return []
+                actions = []
+                for call in calls:
+                    func = call.get("function", {})
+                    name = func.get("name", "unknown")
+                    args_str = func.get("arguments", "{}")
+                    # 解码 Unicode 转义序列（如 \u83b7 -> 获）
+                    args_str = decode_unicode_escapes(args_str)
+                    # 截断过长的参数
+                    if len(args_str) > 200:
+                        args_preview = args_str[:200] + "..."
+                    else:
+                        args_preview = args_str
+                    action_desc = f"(操作: 调用函数: {name}({args_preview}))"
+                    actions.append((call.get("id"), action_desc))
+                return actions
+
+            if isinstance(contents, list):
+                for block in contents:
+                    process_content_item(block)
+            elif isinstance(contents, str):
+                process_content_item(contents)
+
+            final_text = "\n".join(text_messages).strip()
+
+            is_excluded = False
+            if timestamp and has_boundary:
+                try:
+                    ts_norm = timestamp.replace(" ", "T")
+                    dt = datetime.fromisoformat(ts_norm)
+                    # 检查排除窗口：[boundary, boundary + 10min) 范围内不予记录
+                    dt_mins = dt.hour * 60 + dt.minute
+                    boundary_mins = h * 60 + m
+                    diff = (dt_mins - boundary_mins) % 1440
+                    if 0 <= diff < 10:
+                        is_excluded = True
+
+                    if not is_excluded:
+                        # 计算逻辑日期
+                        boundary_dt = dt.replace(
+                            hour=h, minute=m, second=0, microsecond=0
+                        )
+                        from datetime import timedelta
+
+                        if dt < boundary_dt:
+                            t_start = boundary_dt - timedelta(days=1)
+                        else:
+                            t_start = boundary_dt
+                        t_mid = t_start + timedelta(hours=12)
+                        date_key = t_mid.date().isoformat()
+                except Exception:
+                    date_key = get_date_key(timestamp) if timestamp else "unknown_date"
+            else:
+                date_key = get_date_key(timestamp) if timestamp else "unknown_date"
+
+            if is_excluded:
+                continue
+
+            if target_date and date_key != target_date:
+                continue
+
+            if turn_nickname:
+                daily_meta[date_key]["nickname"] = turn_nickname
+            if turn_group_name:
+                daily_meta[date_key]["group_name"] = turn_group_name
+
+            # assistant 普通文本
+            if role == "assistant" and final_text:
+                if len(final_text) <= max_assistant_chars:
+                    daily_txt[date_key].append(f"[{timestamp}] {ai_name}: {final_text}")
+                    daily_json[date_key].append(
+                        {"timestamp": timestamp, "role": ai_name, "content": final_text}
+                    )
+
+            # assistant 工具调用（行动记录）
+            if role == "assistant" and tool_calls:
+                actions_with_id = process_tool_calls_for_actions(tool_calls)
+                for tool_call_id, action_desc in actions_with_id:
+                    if len(action_desc) <= max_assistant_chars:
+                        daily_txt[date_key].append(
+                            f"[{timestamp}] {ai_name}: {action_desc}"
+                        )
+                        daily_json[date_key].append(
+                            {
+                                "timestamp": timestamp,
+                                "role": ai_name,
+                                "content": action_desc,
+                            }
+                        )
+
+            # tool 消息：只提取错误关键词
+            if role == "tool":
+                tool_content = ""
+                if isinstance(contents, str):
+                    tool_content = contents
+                elif isinstance(contents, list):
+                    parts = []
+                    for block in contents:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            parts.append(block.get("text", ""))
+                        elif isinstance(block, str):
+                            parts.append(block)
+                    tool_content = "\n".join(parts)
+                else:
+                    tool_content = str(contents) if contents else ""
+
+                if tool_content:
+                    match = error_re.search(tool_content)
+                    if match:
+                        keyword = match.group(0).strip()
+                        error_msg = f"(操作失败: {keyword})"
+                        daily_txt[date_key].append(
+                            f"[{timestamp}] {ai_name}: {error_msg}"
+                        )
+                        daily_json[date_key].append(
+                            {
+                                "timestamp": timestamp,
+                                "role": ai_name,
+                                "content": error_msg,
+                            }
+                        )
+                continue
+
+            # user 消息
+            if role == "user" and final_text:
+                if final_text == "Output your last task result below.":
+                    continue
+                current_username = turn_nickname if turn_nickname else username
+                if len(final_text) <= max_user_chars:
+                    daily_txt[date_key].append(
+                        f"[{timestamp}] {current_username}: {final_text}"
+                    )
+                    daily_json[date_key].append(
+                        {
+                            "timestamp": timestamp,
+                            "role": current_username,
+                            "content": final_text,
+                        }
+                    )
+
+    # 输出文件
+    for date_key, messages in daily_json.items():
+        if not messages:
+            continue
+
+        safe_user_id = target_user_id.replace(":", "_") if target_user_id else ""
+        output_txt = output_dir / f"{date_key}_dialog_{safe_user_id}.txt"
+        output_json = output_dir / f"{date_key}_dialog_{safe_user_id}.json"
+
+        meta_info = daily_meta.get(date_key, {})
+        group_name = meta_info.get("group_name")
+        nickname = meta_info.get("nickname")
+
+        # Session ID 格式为: connector:chat_type:specific_id
+        # chat_type 包含 GroupMessage (群聊) 或 FriendMessage (私聊)
+        is_group_by_session = "GroupMessage" in (target_user_id or "")
+        is_friend_by_session = "FriendMessage" in (target_user_id or "")
+        specific_id = (
+            target_user_id.split(":")[-1]
+            if target_user_id and ":" in target_user_id
+            else (target_user_id or "")
+        )
+
+        if group_name:
+            chat_type_desc = f"群聊 - {group_name}"
+            chat_type_val = "group"
+        elif is_group_by_session:
+            chat_type_desc = f"群聊 - ID: {specific_id}"
+            chat_type_val = "group"
+        elif nickname:
+            chat_type_desc = f"私聊 - {nickname}"
+            chat_type_val = "private"
+        elif is_friend_by_session:
+            chat_type_desc = f"私聊 - ID: {specific_id}"
+            chat_type_val = "private"
+        else:
+            chat_type_desc = "未提供场景元数据的对话记录"
+            chat_type_val = "private"
+
+        header_lines = [
+            "==================================================",
+            f"对话场景: [{chat_type_desc}]",
+            f"对话标识: {target_user_id}",
+            "==================================================",
+            "",
+            "",
+        ]
+
+        with open(output_txt, "w", encoding="utf-8", errors="replace") as f:
+            f.write("".join(header_lines) + "\n".join(daily_txt[date_key]))
+
+        metadata = {
+            "date": date_key,
+            "total_messages": len(daily_json[date_key]),
+            "platform": platform,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "session_id": target_user_id,
+            "chat_type": chat_type_val,
+            "group_name": group_name,
+            "nickname": nickname,
+        }
+
+        json_output = {"metadata": metadata, "conversations": daily_json[date_key]}
+
+        with open(output_json, "w", encoding="utf-8", errors="replace") as f:
+            json.dump(json_output, f, ensure_ascii=False, indent=2)
+
+        print(f"📄 已输出：{output_json}")

@@ -1,0 +1,239 @@
+{
+  "dialog_folder": {
+    "description": "聊天记录文件夹路径",
+    "type": "string",
+    "hint": "存放聊天记录 JSON 文件的文件夹路径。相对于插件数据目录的路径。",
+    "default": "APLR_chat_history"
+  },
+  "realtime_recording": {
+    "description": "开启实时监听记录",
+    "type": "bool",
+    "hint": "开启后将通过监听 LLM 钩子实时写入聊天记录到 JSON 文件，不再依赖总结时从核心数据库提取。会稍微加大对话时的内存占用。部分平台可能无法正确识别用户名。建议优先【不开启】此功能。",
+    "default": false
+  },
+  "memory_db_path": {
+    "description": "记忆数据库路径",
+    "type": "string",
+    "hint": "存放 APLR 记忆数据库的路径。相对于插件数据目录的路径。",
+    "default": "APLR_DailyReview.db"
+  },
+  "vector_db_path": {
+    "description": "向量数据库路径",
+    "type": "string",
+    "hint": "存放 ChromaDB 向量数据库的路径。相对于插件数据目录的路径。",
+    "default": "APLR_VectorDB"
+  },
+  "embedding_model": {
+    "description": "向量化模型名称",
+    "type": "string",
+    "hint": "用于向量化的 SentenceTransformer 模型名称。支持 HuggingFace 仓库名或本地模型目录绝对路径。",
+    "default": "paraphrase-multilingual-MiniLM-L12-v2"
+  },
+  "hf_endpoint": {
+    "description": "HuggingFace 镜像地址",
+    "type": "string",
+    "hint": "用于下载 embedding 模型。中国大陆可使用 https://hf-mirror.com 。留空则使用默认官方地址。",
+    "default": "https://hf-mirror.com"
+  },
+  "embedding_cache_dir": {
+    "description": "Embedding 模型缓存目录",
+    "type": "string",
+    "hint": "模型下载缓存目录。系统默认地址没有模型时使用。相对路径会基于插件数据目录解析；同一模型下次可离线复用。",
+    "default": "APLR_ModelCache"
+  },
+  "embedding_trust_remote_code": {
+    "description": "允许远程模型代码",
+    "type": "bool",
+    "hint": "仅在你明确知道模型需要 remote code 时开启。默认关闭更安全。",
+    "default": false
+  },
+  "offline_mode": {
+    "description": "离线模式",
+    "type": "bool",
+    "hint": "开启后将强制只读本地模型缓存，彻底避免联网检查（包括 ChromaDB 遥测和 HuggingFace 下载）。请在确认本插件已正常运行过一次且安装的其他插件都不需要连接HuggingFace时再开启。请在更新Astrbot版本前关闭此选项。",
+    "default": false
+  },
+  "model_idle_timeout": {
+    "description": "向量模型自动卸载时长 (分钟)",
+    "type": "int",
+    "hint": "向量模型在闲置多久后自动从内存中释放。-1 表示不自动卸载。建议在内存紧张的环境中设置为 30-60 分钟。",
+    "default": -1
+  },
+  "target_user_id_list": {
+    "description": "目标会话 ID 列表",
+    "type": "list",
+    "hint": "要提取聊天记录的目标会话ID列表, 可用 sid 指令获取当前对话ID。写all则提取所有聊天记录。",
+    "default": ["Lanya_QQ:FriendMessage:947628188"]
+  },
+  "username": {
+    "description": "用户名称",
+    "type": "string",
+    "hint": "通常没有用。本插件会从Astrbot用户识别中自动提取用户名，请从Astrbot-其他配置-用户识别 开启 。假如该功能未开启，AI的长期记忆里用户使用的将会是这里指定的名字。",
+    "default": "olozhika"
+  },
+  "ai_name": {
+    "description": "AI名称",
+    "type": "string",
+    "hint": "AI在聊天记录和记忆中使用的名称。",
+    "default": "Lanya"
+  },
+  "top_n_events": {
+    "description": "回忆匹配 - 检索事件数量",
+    "type": "int",
+    "hint": "从向量数据库中匹配最接近的事件数量。",
+    "default": 10
+  },
+  "m1_top_events": {
+    "description": "回忆匹配 - 返回最相关事件数量",
+    "type": "int",
+    "hint": "从排序后的事件中选择前__个事件返回。",
+    "default": 3
+  },
+  "m2_random_events": {
+    "description": "回忆匹配 - 返回随机事件数量",
+    "type": "int",
+    "hint": "从排序后的事件中另选择随机__个事件返回。",
+    "default": 2
+  },
+  "auto_recall_probability": {
+    "description": "自动触发记忆检索概率",
+    "type": "float",
+    "hint": "当没有关键词触发时，自动触发记忆检索的概率 (0-1)。",
+    "default": 0.3
+  },
+  "auto_recall_threshold": {
+    "description": "自动触发记忆最低相关度",
+    "type": "float",
+    "hint": "自动检索记忆时，只有相关度高于此值的事件才会被注入 (0-100)。",
+    "default": 45.0
+  },
+  "encourage_deep_recall": {
+    "description": "是否鼓励AI进行深度回忆",
+    "type": "bool",
+    "hint": "开启后，在注入记忆或检索记忆时，会额外提示AI可以使用工具进行深度回想或联想。",
+    "default": false
+  },
+  "reinforcement_intensity": {
+    "description": "记忆强化强度",
+    "type": "float",
+    "hint": "【勿动！请保持为0，这是下次更新的内容，现在可能有bug】设置记忆被重复提及后的强化程度。0为关闭，1为默认强度(每次提及强化10%)。数值越高，被提及过的记忆越容易再次被想起。",
+    "default": 0.0
+  },
+  "max_dialogue_kb_per_summary": {
+    "description": "每日总结单次处理对话量 (KB)",
+    "type": "int",
+    "hint": "当对话量超过此值时，会分段进行总结以保证 AI 表现。",
+    "default": 40
+  },
+  "chunk_time_gap_hours": {
+    "description": "分段总结时间间隔阈值 (小时)",
+    "type": "float",
+    "hint": "在分段总结时，如果两条消息间隔超过此值，则允许在此处断开。用于避免切断正在进行的事件。默认 1 小时。",
+    "default": 1.0
+  },
+  "weight_time": {
+    "description": "回忆权重 - 时间系数",
+    "type": "float",
+    "hint": "控制时间对记忆回忆的影响。数值越大，越倾向于回忆起最近的记忆。默认 1.0。",
+    "default": 1.0
+  },
+  "weight_importance": {
+    "description": "回忆权重 - 重要性系数",
+    "type": "float",
+    "hint": "控制事件重要性对记忆回忆的影响。默认 1.0。",
+    "default": 1.0
+  },
+  "weight_emotional_intensity": {
+    "description": "回忆权重 - 情感强度系数",
+    "type": "float",
+    "hint": "控制情感强度对记忆回忆的影响。默认 1.0。",
+    "default": 1.0
+  },
+  "weight_rare_word": {
+    "description": "回忆权重 - 罕见词系数",
+    "type": "float",
+    "hint": "控制匹配到罕见词（TF-IDF权重高）时的加成强度。默认 1.0。",
+    "default": 1.0
+  },
+  "day_boundary_config": {
+    "description": "自定义日期分割与自动总结配置",
+    "type": "object",
+    "hint": "配置自定义的一天开始时刻，以及是否在此时间点之后自动触发每日总结。",
+    "items": {
+      "boundary_cron": {
+        "description": "日期分割时间 (Cron 格式，本地时区)",
+        "type": "string",
+        "hint": "形如 '0 4 * * *' (代表凌晨 4:00)，这必须是一个每天只执行一次的 cron 时间点。整理/记录聊天记录时，以此时间作为新一天的分割处。不建议在此时间后10min内与LLM交流。",
+        "default": "55 23 * * *"
+      },
+      "auto_summary_enabled": {
+        "description": "是否开启自动每日总结",
+        "type": "bool",
+        "hint": "开启后，系统将在用户定义的时间点 +1 分钟时自动执行每日总结。",
+        "default": false
+      },
+      "auto_end_session": {
+        "description": "是否自动结束/重置上下文会话",
+        "type": "bool",
+        "hint": "开启后，系统将在用户定义的分界时刻 (boundary_cron) +9 分钟时自动关闭所有活跃对话，让第二天从全新上下文空对话开始，防止记忆臃肿。本功能不会删除 astrbot-更多功能-对话历史 中的任何内容。",
+        "default": false
+      },
+      "admin_session": {
+        "description": "管理消息投递会话 (仅自动定时总结)",
+        "type": "string",
+        "hint": "当自动每日总结检测到需要提醒的事项（如建议执行记忆聚类）时，向此会话直接投递通知消息。可填入 unified_msg_origin（如 'Lanya_QQ:GroupMessage:123456'）。留空则仅在后台日志输出。",
+        "default": ""
+      },
+      "insert_cron_to_chat_history": {
+        "description": "将完整 Cron 记录写入自带聊天记录",
+        "type": "bool",
+        "hint": "【请保持关闭，会在下次更新中优化】开启后，当定时任务 (Cron job) 结束时，将把该任务发生的完整交互记录（包括深层/浅层思考、函数调用及回复）批量插入到 AstrBot 自带的聊天记录中，使其永久留存。",
+        "default": false
+      }
+    }
+  },
+  "dailyreview_nodes": {
+    "description": "每日总结 - 记忆节点配置",
+    "type": "object",
+    "hint": "配置每日总结过程中，如何检索和更新长期记忆节点。",
+    "items": {
+      "include_reflection": {
+        "description": "注入事件反思",
+        "type": "bool",
+        "hint": "开启后，在总结记忆节点时会额外提供事件的reflection（反思）。有助于 AI 记录深层见解和情感波动。",
+        "default": false
+      },
+      "max_reference_nodes": {
+        "description": "参考节点上限",
+        "type": "int",
+        "hint": "当单个关键词唤起多个节点时，最终提供给 AI 的参考节点总数上限。默认 20。",
+        "default": 20
+      }
+    }
+  },
+  "prompts": {
+    "description": "提示词自定义配置",
+    "type": "object",
+    "hint": "用于自定义 AI 在总结、提取节点和固化记忆时的行为逻辑。",
+    "items": {
+      "event_summary": {
+        "description": "提示词 - 事件总结",
+        "type": "text",
+        "hint": "用于每日总结第一阶段：从对话中提取事件。支持自定义总结规则。",
+        "default": "- 必须输出合法的 JSON 对象，不要包含任何解释文字或 Markdown 代码块。\n- 事件整合：将连续的、围绕同一话题或活动的对话整合为一个完整的“事件”。\n- 情感真实：importance 和 emotional_intensity 必须是 1-10 的整数，根据你的真实感受填写。\n- 标签规范：采用“核心分类 + 自由扩展”策略。优先从 [生活, 情感, 成长, 琐事, 技术, 灵感, 健康, 安全, 友谊] 中选择大类，再根据需要添加 1-2 个具体的细节标签。\n- 深度感想 (reflection)：你可以对感觉很有意义或学到很多东西的事件写下你想长期记住的深刻观察与反思。着重记录观察到了什么、思考了什么、采取了什么行动、从中学到了什么。对于绝大多数日常琐事和普通交流，请填写“无”。"
+      },
+      "memory_node": {
+        "description": "提示词 - 记忆节点",
+        "type": "text",
+        "hint": "用于每日总结第二阶段：从事件中提取或更新长期记忆节点。",
+        "default": "- 必须输出合法的 JSON 对象，不要包含任何解释文字或 Markdown 代码块。\n- 记忆节点 (nodes) 提取：\n    - 仅提取具有“长期记忆价值”的重要实体（人物、地点、核心物品）或反复出现的关键概念。\n    - 避免提取琐碎的、一次性的细节（如：某个普通的餐馆名、随口提及的非核心地名）。\n    - 为每个节点提供 type（类型）和 description（综合描述）。\n    - 节点信息维护策略：\n        - 已知参考：参考下方的“已知记忆节点背景”。\n        - 继承与演进：对于已存在的节点，应在保留完整核心事实（如身份、关键背景）的基础上，根据今日信息更新其状态或追加新进展。\n        - 合并同义词：如果你发现今日提到的某个实体/概念与“已知记忆节点背景”中的某个节点是同一个，请务必使用**已有节点的名称**进行更新，不要创建重复节点。\n        - 清理冗余：如果发现某些已有节点可以被更精确的新节点完全替代，请将旧节点名称放入 `deleted_nodes` 列表中。\n        - 修正与精简：如果发现旧描述中存在已失效的信息，请果断进行修正或剔除，保持描述的精炼与准确。\n        - 增量更新：重点记录事件中体现出的且有持久影响的新变化、新观点或新属性。"
+      },
+      "theme_summary": {
+        "description": "提示词 - 主题归类",
+        "type": "text",
+        "hint": "用于主题归类：对同一主题的一组事件进行高度概括。",
+        "default": "你正在对一组你经历的相关事件进行归类与概括。请将以下事件提炼成一个简洁、抽象的总结。\n\n总结要求：\n    高度概括：忽略具体细节，只提取这些事件背后共同的行为倾向、互动习惯、关系模式或反复出现的主题。\n    精炼为佳：写清完整主谓宾，允许复合主语。使用第一人称。直接输出总结正文。"
+      }
+    }
+  }
+}
