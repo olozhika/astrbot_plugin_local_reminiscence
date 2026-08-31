@@ -648,6 +648,9 @@ class MemoryDB:
 
             where_clause = " OR ".join(where_parts)
 
+            # 防僵尸节点：排除"标记删除"的节点（描述被改成删除标记但条目仍在库中，会被误召回导致已删内容复活）
+            where_clause = f"({where_clause}) AND (description IS NULL OR (description NOT LIKE '已删除%' AND description NOT LIKE '（节点已彻底移除%'))"
+
             # 排序：名称完全一致 > 别名完全一致 > 名称开头 > 别名开头 > 名称包含 > 别名包含 > 描述包含
             params.extend(
                 [
