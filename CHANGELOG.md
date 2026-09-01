@@ -1,3 +1,45 @@
+### 🔄 大更新说明 / Update Log (v1.4.0)
+
+**v1.4.0 是本地回忆[APLR]的大版本更新，带来了「记忆节点网络升级」与「智能聚类提醒」两大能力。**
+
+1. **记忆节点新增别名与关联事件**
+    - `MemoryNode` 新增 `aliases` 和 `related_event_ids` 字段
+    - 每日总结节点提取时，LLM 会在已有别名基础上追加新别名（展示在已知节点背景中）
+    - 保存总结时自动做名称/别名与事件叙述的全文匹配，将匹配的事件 ID 追加到节点关联
+    - `search_nodes` 搜索时别名与正名有同等匹配地位
+    - 新增维护指令 `/APLR_maintenance backfill_node_relations`，一键全量回填所有节点关联
+    - `update_nodes` 写入时采用追加合并策略，不会丢失已有的别名和关联
+
+2. **智能提醒记忆聚类**
+    - 每日总结后自动检查：事件数达 300 且未聚类，或聚类后事件数翻倍，则提醒用户执行 `/memory_consolidation`
+    - 对于用户指令或 Cron job 触发的提醒直接发送到当前会话
+    - 对于自动定时总结可配置 `day_boundary_config.admin_session` 投递通知，留空则仅后台日志提醒
+
+3. **已知节点覆写保护**
+    - 每日总结的节点提取环节中，若 LLM 提交了"已知记忆节点背景"中未提供的已有节点，`description` 改为追加而非覆写，`type` 改为去重后追加（支持 `;` `,` `，` `/` 分隔）
+    - 删除了 `memory_node` 默认提示词中关于 `recall_node_tool` 的误导性描述（LLM 在该环节无工具调用能力）
+
+4. **AstrBot 框架解耦**
+    - `vector_db.py`、`summarizer.py`、`memory_consolidation.py` 中的 `from astrbot.api import logger` 替换为标准库 `logging.getLogger(__name__)`
+    - 所有 AstrBot 相关包调用现在仅出现在 `main.py` 中，其余模块可直接移植到其他 Agent 框架
+
+5. **记忆回忆重复加固修复**
+    - 修复了 `recall_memory_tool` 和 `_get_memory_retrieval_text` 各自独立执行 `reinforce_memory` 导致单次回忆双重加固的 bug
+    - 加固逻辑统一收归 `_get_memory_retrieval_text`，由 `reinforcement_intensity` 配置统一控制
+
+6. **群聊上下文感知节点消歧**
+    - 新增 `get_first_level_connected_nodes()` 方法，通过共享事件图结构找到与指定节点直接相连的节点
+    - 群聊场景：以群聊节点 + 发言者节点为双源，取并集后查找一级连接节点，再按消息关键词过滤
+    - 私聊场景：以发言者节点为单源，同样查找一级连接节点并按关键词过滤
+    - 排他性回退：若一级连接匹配命中则使用（避免跨群同名污染），否则回退到全节点搜索
+
+7. **`deep_recall_tool` 支持节点名称查询**
+    - 输入节点名称（精确匹配）可查看该节点的关联事件列表
+    - 采用概率加权随机抽取（复用主题回想的权重逻辑）：时间衰减 × 重要性 × 情感强度
+    - 默认抽取 5 条，事件不足 5 条时全部返回
+    - 展示格式：仅显示日期和叙述，按日期倒序排列
+    - 支持按正名和别名精确匹配
+
 ### 🔄 小更新说明 (v1.3.5)
 
 1. 每日总结自定义日期分隔

@@ -7,11 +7,13 @@ from datetime import datetime
 from collections import defaultdict
 from pathlib import Path
 
+
 def decode_json_unicode(s):
     try:
         return json.loads(s)
     except Exception:
         return s
+
 
 def decode_unicode_escapes(s):
     """
@@ -20,7 +22,7 @@ def decode_unicode_escapes(s):
     """
     if not isinstance(s, str):
         return s
-    
+
     def replace_unicode(match):
         code_str = match.group(1)
         try:
@@ -32,8 +34,9 @@ def decode_unicode_escapes(s):
             return chr(code)
         except ValueError:
             return match.group(0)
-            
-    return re.sub(r'\\u([0-9a-fA-F]{4})', replace_unicode, s)
+
+    return re.sub(r"\\u([0-9a-fA-F]{4})", replace_unicode, s)
+
 
 def get_date_key(ts):
     if ts is None:
@@ -45,18 +48,19 @@ def get_date_key(ts):
     except Exception:
         return ts.split(" ")[0].split("T")[0]
 
+
 def clean_dialogue_with_different_limits(
-        db_path: Path,
-        output_dir: Path,
-        username="olozhika",
-        ai_name="Lanya",
-        max_user_chars=1000, 
-        max_assistant_chars=2000,
-        platform="AstrBot",
-        target_date=None,
-        target_user_id=None,
-        day_boundary_config: dict = None
-    ):
+    db_path: Path,
+    output_dir: Path,
+    username="olozhika",
+    ai_name="Lanya",
+    max_user_chars=1000,
+    max_assistant_chars=2000,
+    platform="AstrBot",
+    target_date=None,
+    target_user_id=None,
+    day_boundary_config: dict = None,
+):
     """从 AstrBot 核心数据库提取对话并按日期输出 dialog 文件。
 
     返回值: int —— 实际输出到文件的消息条数（0 表示该用户在该日无记录）。
@@ -87,7 +91,9 @@ def clean_dialogue_with_different_limits(
     try:
         cursor = conn.cursor()
         if target_user_id:
-            cursor.execute("SELECT content FROM conversations WHERE user_id = ?", (target_user_id,))
+            cursor.execute(
+                "SELECT content FROM conversations WHERE user_id = ?", (target_user_id,)
+            )
         else:
             cursor.execute("SELECT content FROM conversations")
         rows = cursor.fetchall()
@@ -95,7 +101,7 @@ def clean_dialogue_with_different_limits(
         raise RuntimeError(f"❌ 读取数据库失败: {e}")
     finally:
         conn.close()
-    
+
     if not rows:
         print(f"⚠️ 没有找到用户 {target_user_id} 的聊天记录")
         return 0
@@ -105,23 +111,26 @@ def clean_dialogue_with_different_limits(
     daily_meta = defaultdict(dict)
 
     def extract_timestamp(text):
-        if not text: return None
-        match = re.search(r'Current datetime:\s*([0-9:\-\sT]+)\s*\(.*?\)', text)
+        if not text:
+            return None
+        match = re.search(r"Current datetime:\s*([0-9:\-\sT]+)\s*\(.*?\)", text)
         if match:
             return match.group(1).strip()
-        match = re.search(r'triggered at\s*([0-9:\-\sT\.\+]+)', text)
+        match = re.search(r"triggered at\s*([0-9:\-\sT\.\+]+)", text)
         if match:
             return match.group(1).strip()
         return None
 
     def extract_nickname(text):
-        if not text: return None
-        match = re.search(r'Nickname:\s*([^\n\r,<>]+)', text, re.IGNORECASE)
+        if not text:
+            return None
+        match = re.search(r"Nickname:\s*([^\n\r,<>]+)", text, re.IGNORECASE)
         return match.group(1).strip() if match else None
 
     def extract_group_name(text):
-        if not text: return None
-        match = re.search(r'Group name:\s*([^\n\r,<>]+)', text, re.IGNORECASE)
+        if not text:
+            return None
+        match = re.search(r"Group name:\s*([^\n\r,<>]+)", text, re.IGNORECASE)
         return match.group(1).strip() if match else None
 
     def is_metadata_block(text):
@@ -141,14 +150,17 @@ def clean_dialogue_with_different_limits(
         "traceback",
         "error",
         "fail",
-        "denied"
+        "denied",
     ]
-    error_re = re.compile('|'.join(re.escape(kw) for kw in error_keywords), re.IGNORECASE)
+    error_re = re.compile(
+        "|".join(re.escape(kw) for kw in error_keywords), re.IGNORECASE
+    )
 
     for row in rows:
-        row_content = decode_json_unicode(row['content'])
-        if not isinstance(row_content, list): continue
-        
+        row_content = decode_json_unicode(row["content"])
+        if not isinstance(row_content, list):
+            continue
+
         initial_timestamp = None
         for turn in row_content:
             cs = turn.get("content")
@@ -156,19 +168,23 @@ def clean_dialogue_with_different_limits(
                 for b in cs:
                     t = b.get("text", "") if isinstance(b, dict) else str(b)
                     initial_timestamp = extract_timestamp(t)
-                    if initial_timestamp: break
+                    if initial_timestamp:
+                        break
             elif isinstance(cs, str):
                 initial_timestamp = extract_timestamp(cs)
-            if initial_timestamp: break
-        
+            if initial_timestamp:
+                break
+
         timestamp = initial_timestamp
         for turn in row_content:
             role = turn.get("role")
             contents = turn.get("content")
             tool_calls = turn.get("tool_calls")
-            
-            if not role: continue
-            if contents is None and not tool_calls: continue
+
+            if not role:
+                continue
+            if contents is None and not tool_calls:
+                continue
 
             text_messages = []
             turn_nickname = None
@@ -234,9 +250,9 @@ def clean_dialogue_with_different_limits(
                     process_content_item(block)
             elif isinstance(contents, str):
                 process_content_item(contents)
-            
+
             final_text = "\n".join(text_messages).strip()
-            
+
             is_excluded = False
             if timestamp and has_boundary:
                 try:
@@ -248,11 +264,14 @@ def clean_dialogue_with_different_limits(
                     diff = (dt_mins - boundary_mins) % 1440
                     if 0 <= diff < 10:
                         is_excluded = True
-                    
+
                     if not is_excluded:
                         # 计算逻辑日期
-                        boundary_dt = dt.replace(hour=h, minute=m, second=0, microsecond=0)
+                        boundary_dt = dt.replace(
+                            hour=h, minute=m, second=0, microsecond=0
+                        )
                         from datetime import timedelta
+
                         if dt < boundary_dt:
                             t_start = boundary_dt - timedelta(days=1)
                         else:
@@ -263,7 +282,7 @@ def clean_dialogue_with_different_limits(
                     date_key = get_date_key(timestamp) if timestamp else "unknown_date"
             else:
                 date_key = get_date_key(timestamp) if timestamp else "unknown_date"
-                
+
             if is_excluded:
                 continue
 
@@ -279,24 +298,26 @@ def clean_dialogue_with_different_limits(
             if role == "assistant" and final_text:
                 if len(final_text) <= max_assistant_chars:
                     daily_txt[date_key].append(f"[{timestamp}] {ai_name}: {final_text}")
-                    daily_json[date_key].append({
-                        "timestamp": timestamp,
-                        "role": ai_name,
-                        "content": final_text
-                    })
-            
+                    daily_json[date_key].append(
+                        {"timestamp": timestamp, "role": ai_name, "content": final_text}
+                    )
+
             # assistant 工具调用（行动记录）
             if role == "assistant" and tool_calls:
                 actions_with_id = process_tool_calls_for_actions(tool_calls)
                 for tool_call_id, action_desc in actions_with_id:
                     if len(action_desc) <= max_assistant_chars:
-                        daily_txt[date_key].append(f"[{timestamp}] {ai_name}: {action_desc}")
-                        daily_json[date_key].append({
-                            "timestamp": timestamp,
-                            "role": ai_name,
-                            "content": action_desc
-                        })
-            
+                        daily_txt[date_key].append(
+                            f"[{timestamp}] {ai_name}: {action_desc}"
+                        )
+                        daily_json[date_key].append(
+                            {
+                                "timestamp": timestamp,
+                                "role": ai_name,
+                                "content": action_desc,
+                            }
+                        )
+
             # tool 消息：只提取错误关键词
             if role == "tool":
                 tool_content = ""
@@ -312,18 +333,22 @@ def clean_dialogue_with_different_limits(
                     tool_content = "\n".join(parts)
                 else:
                     tool_content = str(contents) if contents else ""
-                
+
                 if tool_content:
                     match = error_re.search(tool_content)
                     if match:
                         keyword = match.group(0).strip()
                         error_msg = f"(操作失败: {keyword})"
-                        daily_txt[date_key].append(f"[{timestamp}] {ai_name}: {error_msg}")
-                        daily_json[date_key].append({
-                            "timestamp": timestamp,
-                            "role": ai_name,
-                            "content": error_msg
-                        })
+                        daily_txt[date_key].append(
+                            f"[{timestamp}] {ai_name}: {error_msg}"
+                        )
+                        daily_json[date_key].append(
+                            {
+                                "timestamp": timestamp,
+                                "role": ai_name,
+                                "content": error_msg,
+                            }
+                        )
                 continue
 
             # user 消息
@@ -332,19 +357,23 @@ def clean_dialogue_with_different_limits(
                     continue
                 current_username = turn_nickname if turn_nickname else username
                 if len(final_text) <= max_user_chars:
-                    daily_txt[date_key].append(f"[{timestamp}] {current_username}: {final_text}")
-                    daily_json[date_key].append({
-                        "timestamp": timestamp,
-                        "role": current_username,
-                        "content": final_text
-                    })
+                    daily_txt[date_key].append(
+                        f"[{timestamp}] {current_username}: {final_text}"
+                    )
+                    daily_json[date_key].append(
+                        {
+                            "timestamp": timestamp,
+                            "role": current_username,
+                            "content": final_text,
+                        }
+                    )
 
     # 输出文件
     extracted_count = 0
     for date_key, messages in daily_json.items():
         if not messages:
             continue
-        
+
         safe_user_id = target_user_id.replace(":", "_") if target_user_id else ""
         output_txt = output_dir / f"{date_key}_dialog_{safe_user_id}.txt"
         output_json = output_dir / f"{date_key}_dialog_{safe_user_id}.json"
@@ -357,7 +386,11 @@ def clean_dialogue_with_different_limits(
         # chat_type 包含 GroupMessage (群聊) 或 FriendMessage (私聊)
         is_group_by_session = "GroupMessage" in (target_user_id or "")
         is_friend_by_session = "FriendMessage" in (target_user_id or "")
-        specific_id = target_user_id.split(":")[-1] if target_user_id and ":" in target_user_id else (target_user_id or "")
+        specific_id = (
+            target_user_id.split(":")[-1]
+            if target_user_id and ":" in target_user_id
+            else (target_user_id or "")
+        )
 
         if group_name:
             chat_type_desc = f"群聊 - {group_name}"
@@ -381,7 +414,7 @@ def clean_dialogue_with_different_limits(
             f"对话标识: {target_user_id}",
             "==================================================",
             "",
-            ""
+            "",
         ]
 
         with open(output_txt, "w", encoding="utf-8", errors="replace") as f:
@@ -395,13 +428,10 @@ def clean_dialogue_with_different_limits(
             "session_id": target_user_id,
             "chat_type": chat_type_val,
             "group_name": group_name,
-            "nickname": nickname
+            "nickname": nickname,
         }
 
-        json_output = {
-            "metadata": metadata,
-            "conversations": daily_json[date_key]
-        }
+        json_output = {"metadata": metadata, "conversations": daily_json[date_key]}
 
         with open(output_json, "w", encoding="utf-8", errors="replace") as f:
             json.dump(json_output, f, ensure_ascii=False, indent=2)
