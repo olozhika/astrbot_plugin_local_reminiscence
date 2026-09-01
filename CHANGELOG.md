@@ -40,6 +40,18 @@
     - 展示格式：仅显示日期和叙述，按日期倒序排列
     - 支持按正名和别名精确匹配
 
+8. **LLM 提示词缓存优化**
+    - 记忆注入从 `system_prompt` 迁移到 `extra_user_content_parts`（需 AstrBot ≥ v4.27.5）
+    - 利用 `TextPart.mark_as_temp()` 机制：记忆内容发送给 LLM 但不持久化到会话历史
+    - 效果：system_prompt 保持稳定，跨会话前缀缓存命中率提升（实测 ~98% → ~90% 恢复至 ~98%）
+    - 向后兼容：旧版 AstrBot 自动回退到 `system_prompt` 注入（行为不变）
+
+9. **`on_agent_done` 向后兼容回退机制**
+    - 当 AstrBot 版本 < v4.23.2（无 `on_agent_done` 钩子）时，Cron Job 的完整交互记录会在下次 Cron Job 触发时自动写入官方聊天记录
+    - 采用"延迟冲洗"策略：新 Cron Job 开始时检查并写入上一个 Cron Job 积累的记录
+    - 新增 `_active_cron_umos` 映射，在记录追加时同步存储 `unified_msg_origin`，确保回退写入能正确找到目标会话
+    - 完全向后兼容：≥ v4.23.2 版本仍通过 `on_agent_done` 钩子即时写入，行为不变
+
 ### 🔄 小更新说明 (v1.3.5)
 
 1. 每日总结自定义日期分隔
