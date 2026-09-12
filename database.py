@@ -44,6 +44,10 @@ class MemoryDB:
                 cursor.execute(
                     "ALTER TABLE nodes ADD COLUMN related_event_ids TEXT DEFAULT '[]'"
                 )
+            if "related_theme_ids" not in node_columns:
+                cursor.execute(
+                    "ALTER TABLE nodes ADD COLUMN related_theme_ids TEXT DEFAULT '[]'"
+                )
 
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_events_date ON events(date)")
 
@@ -139,7 +143,7 @@ class MemoryDB:
             conn.close()
 
     def update_nodes(self, nodes: list):
-        """更新记忆节点。aliases 和 related_event_ids 采用追加合并策略。"""
+        """更新记忆节点。aliases、related_event_ids 和 related_theme_ids 采用追加合并策略。"""
         if not nodes:
             return
         with self._get_conn() as conn:
@@ -159,6 +163,12 @@ class MemoryDB:
                     new_events = set(node.related_event_ids or [])
                     merged_events = list(existing_events | new_events)
 
+                    existing_themes = set(
+                        json.loads(existing["related_theme_ids"] or "[]")
+                    )
+                    new_themes = set(node.related_theme_ids or [])
+                    merged_themes = list(existing_themes | new_themes)
+
                     cursor.execute(
                         """
                         UPDATE nodes SET
@@ -166,6 +176,7 @@ class MemoryDB:
                             description = ?,
                             aliases = ?,
                             related_event_ids = ?,
+                            related_theme_ids = ?,
                             last_updated = CURRENT_TIMESTAMP
                         WHERE name = ?
                     """,
@@ -174,14 +185,15 @@ class MemoryDB:
                             node.description,
                             json.dumps(merged_aliases, ensure_ascii=False),
                             json.dumps(merged_events, ensure_ascii=False),
+                            json.dumps(merged_themes, ensure_ascii=False),
                             node.name,
                         ),
                     )
                 else:
                     cursor.execute(
                         """
-                        INSERT INTO nodes (name, type, description, aliases, related_event_ids, last_updated)
-                        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        INSERT INTO nodes (name, type, description, aliases, related_event_ids, related_theme_ids, last_updated)
+                        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                     """,
                         (
                             node.name,
@@ -189,6 +201,7 @@ class MemoryDB:
                             node.description,
                             json.dumps(node.aliases, ensure_ascii=False),
                             json.dumps(node.related_event_ids, ensure_ascii=False),
+                            json.dumps(node.related_theme_ids, ensure_ascii=False),
                         ),
                     )
             conn.commit()
@@ -213,7 +226,7 @@ class MemoryDB:
                 (summary.date, summary.daily_reflection),
             )
 
-            # 插入/更新记忆节点 (合并追加 aliases 和 related_event_ids)
+            # 插入/更新记忆节点 (合并追加 aliases、related_event_ids 和 related_theme_ids)
             if hasattr(summary, "nodes") and summary.nodes:
                 for node in summary.nodes:
                     existing = cursor.execute(
@@ -229,6 +242,12 @@ class MemoryDB:
                         )
                         new_events = set(node.related_event_ids or [])
                         merged_events = list(existing_events | new_events)
+
+                        existing_themes = set(
+                            json.loads(existing["related_theme_ids"] or "[]")
+                        )
+                        new_themes = set(node.related_theme_ids or [])
+                        merged_themes = list(existing_themes | new_themes)
 
                         # 当 LLM 提交的节点不在"已知记忆节点背景"中时，使用追加策略避免覆盖
                         need_merge = (
@@ -264,6 +283,7 @@ class MemoryDB:
                                 description = ?,
                                 aliases = ?,
                                 related_event_ids = ?,
+                                related_theme_ids = ?,
                                 last_updated = CURRENT_TIMESTAMP
                             WHERE name = ?
                         """,
@@ -272,14 +292,15 @@ class MemoryDB:
                                 merged_description,
                                 json.dumps(merged_aliases, ensure_ascii=False),
                                 json.dumps(merged_events, ensure_ascii=False),
+                                json.dumps(merged_themes, ensure_ascii=False),
                                 node.name,
                             ),
                         )
                     else:
                         cursor.execute(
                             """
-                            INSERT INTO nodes (name, type, description, aliases, related_event_ids, last_updated)
-                            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                            INSERT INTO nodes (name, type, description, aliases, related_event_ids, related_theme_ids, last_updated)
+                            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                         """,
                             (
                                 node.name,
@@ -287,6 +308,7 @@ class MemoryDB:
                                 node.description,
                                 json.dumps(node.aliases, ensure_ascii=False),
                                 json.dumps(node.related_event_ids, ensure_ascii=False),
+                                json.dumps(node.related_theme_ids, ensure_ascii=False),
                             ),
                         )
 
@@ -337,14 +359,12 @@ class MemoryDB:
             ):
                 for node in summary.nodes:
                     current_events = set(node.related_event_ids or [])
-                    narrative_lower = ""
                     for event in summary.events:
-                        narrative_lower = (event.narrative or "").lower()
-                        name_lower = node.name.lower()
-                        if name_lower and name_lower in narrative_lower:
+                        narrative = (event.narrative or "").lower()
+                        if node.name and node.name.lower() in narrative:
                             current_events.add(event.event_id)
                         for alias in node.aliases or []:
-                            if alias.lower() in narrative_lower:
+                            if alias and alias.lower() in narrative:
                                 current_events.add(event.event_id)
                     if current_events:
                         new_serialized = json.dumps(
@@ -850,7 +870,8 @@ class MemoryDB:
             return [dict(row) for row in cursor.fetchall()]
 
     def backfill_node_relations(self) -> int:
-        """全量回填：遍历所有事件和节点，通过名称/别名匹配建立 related_event_ids 关联。返回更新的节点数。"""
+        """全量回填：遍历所有事件和节点，通过名称/别名匹配建立 related_event_ids 关联。
+        同时回填主题节点关联。返回更新的节点数。"""
         with self._get_conn() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM nodes")
@@ -867,12 +888,12 @@ class MemoryDB:
 
                 for ev in all_events:
                     narrative_lower = (ev["narrative"] or "").lower()
-                    if name.lower() in narrative_lower:
+                    if name and name.lower() in narrative_lower:
                         if ev["event_id"] not in matched_ids:
                             matched_ids.add(ev["event_id"])
                             changed = True
                     for alias in aliases:
-                        if alias.lower() in narrative_lower:
+                        if alias and alias.lower() in narrative_lower:
                             if ev["event_id"] not in matched_ids:
                                 matched_ids.add(ev["event_id"])
                                 changed = True
@@ -882,6 +903,60 @@ class MemoryDB:
                         "UPDATE nodes SET related_event_ids = ? WHERE name = ?",
                         (
                             json.dumps(sorted(matched_ids), ensure_ascii=False),
+                            name,
+                        ),
+                    )
+                    updated_count += 1
+
+            conn.commit()
+
+        # 同时回填主题节点关联
+        theme_updated = self.backfill_theme_node_relations()
+        return updated_count
+
+    def clear_theme_node_associations(self):
+        """清除所有节点的 related_theme_ids，用于聚类重建前的清理。"""
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE nodes SET related_theme_ids = '[]'")
+            conn.commit()
+
+    def backfill_theme_node_relations(self) -> int:
+        """全量回填：遍历所有主题总结和节点，通过名称/别名匹配建立 related_theme_ids 关联。
+        返回更新的节点数。"""
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM nodes")
+            all_nodes = [dict(row) for row in cursor.fetchall()]
+            cursor.execute("SELECT theme_id, summary FROM thematic_memories")
+            all_themes = [dict(row) for row in cursor.fetchall()]
+
+            updated_count = 0
+            for node in all_nodes:
+                name = node["name"]
+                aliases = set(json.loads(node.get("aliases") or "[]"))
+                matched_theme_ids = set(
+                    json.loads(node.get("related_theme_ids") or "[]")
+                )
+                changed = False
+
+                for theme in all_themes:
+                    summary_lower = (theme["summary"] or "").lower()
+                    if name and name.lower() in summary_lower:
+                        if theme["theme_id"] not in matched_theme_ids:
+                            matched_theme_ids.add(theme["theme_id"])
+                            changed = True
+                    for alias in aliases:
+                        if alias and alias.lower() in summary_lower:
+                            if theme["theme_id"] not in matched_theme_ids:
+                                matched_theme_ids.add(theme["theme_id"])
+                                changed = True
+
+                if changed:
+                    cursor.execute(
+                        "UPDATE nodes SET related_theme_ids = ? WHERE name = ?",
+                        (
+                            json.dumps(sorted(matched_theme_ids), ensure_ascii=False),
                             name,
                         ),
                     )

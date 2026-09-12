@@ -86,7 +86,7 @@ def clean_dialogue_with_different_limits(
     if not db_path.exists():
         raise FileNotFoundError(f"❌ 数据库不存在: {db_path}")
 
-    conn = sqlite3.connect(str(db_path))
+    conn = sqlite3.connect(str(db_path), timeout=35)
     conn.row_factory = sqlite3.Row
     try:
         cursor = conn.cursor()

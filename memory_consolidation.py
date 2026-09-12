@@ -106,6 +106,9 @@ class ThematicConsolidator:
         """全局重聚类（大固化）"""
         logger.info("[APLR] 开始执行全局记忆固化（大固化）...")
 
+        # 清除旧的节点-主题关联（旧聚类将被重建）
+        self.db.clear_theme_node_associations()
+
         # 1. 获取所有事件
         events = self.db.get_all_events()
         if len(events) < target_min:
@@ -246,6 +249,10 @@ class ThematicConsolidator:
         # 7. 触发总结
         await self.summarize_all_themes()
 
+        # 8. 回填节点-主题关联
+        theme_updated = self.db.backfill_theme_node_relations()
+        logger.info(f"[APLR] 大固化后回填节点-主题关联，更新了 {theme_updated} 个节点")
+
     async def incremental_consolidation(self):
         """增量固化（日常更新）"""
         logger.info("[APLR] 开始执行增量记忆固化...")
@@ -336,6 +343,11 @@ class ThematicConsolidator:
 
         # 3. 检查是否需要更新总结 (重心更新已移至此函数内部)
         await self.summarize_all_themes(force=False)
+
+        # 4. 回填节点-主题关联
+        theme_updated = self.db.backfill_theme_node_relations()
+        if theme_updated:
+            logger.info(f"[APLR] 增量固化后回填节点-主题关联，更新了 {theme_updated} 个节点")
 
     async def summarize_all_themes(self, force=True):
         """为所有需要更新的主题生成总结"""

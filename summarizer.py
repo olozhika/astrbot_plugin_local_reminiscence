@@ -125,19 +125,29 @@ class DailySummarizer:
 """
         if self.base_system_prompt:
             system_prompt = self.base_system_prompt + "\n\n" + system_prompt
-        try:
-            llm_resp = await self.llm_generate(
-                prompt=f"请从以下事件中提取记忆节点：\n\n{events_text}",
-                system_prompt=system_prompt,
-            )
-            content = self._extract_json(llm_resp.completion_text)
-            data = json.loads(content)
-            nodes_data = data.get("nodes", [])
-            deleted_nodes = data.get("deleted_nodes", [])
-            return [MemoryNode(**n) for n in nodes_data], deleted_nodes
-        except Exception as e:
-            logger.error(f"提取节点时发生错误: {e}", exc_info=True)
-            return None
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                llm_resp = await self.llm_generate(
+                    prompt=f"请从以下事件中提取记忆节点：\n\n{events_text}",
+                    system_prompt=system_prompt,
+                )
+                content = self._extract_json(llm_resp.completion_text)
+                data = json.loads(content)
+                nodes_data = data.get("nodes", [])
+                deleted_nodes = data.get("deleted_nodes", [])
+                return [MemoryNode(**n) for n in nodes_data], deleted_nodes
+            except json.JSONDecodeError as e:
+                logger.warning(f"提取节点 JSON 解析失败 (尝试 {attempt + 1}/{max_retries}): {e}")
+                logger.debug(f"LLM 原始响应: {llm_resp.completion_text[:500] if 'llm_resp' in locals() else '未获取到'}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2 ** attempt)
+            except Exception as e:
+                logger.warning(f"提取节点时发生错误 (尝试 {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2 ** attempt)
+        logger.error(f"提取节点最终失败 (已重试 {max_retries} 次)")
+        return None
 
     async def generate_summary(
         self,
@@ -145,10 +155,14 @@ class DailySummarizer:
         date_str: str,
         existing_nodes_context: str = "",
         include_reflection: bool = False,
-    ) -> DailySummary | None:
+    ) -> tuple[DailySummary | None, list[int]]:
         """两阶段总结法：
         1. 提取今日事件与日感想（支持分段处理）。
         2. 提取/更新记忆节点。
+        
+        Returns:
+            tuple: (DailySummary | None, failed_chunks: list[int])
+                   failed_chunks 是失败的批次编号列表（从1开始）
         """
 
         # --- 第一阶段：核心总结（事件、日感想） ---
@@ -187,6 +201,7 @@ class DailySummarizer:
         all_events = []
         all_reflections = []
         current_event_count = 0
+        failed_chunks = []  # 记录失败的批次
 
         for i, chunk in enumerate(conversation_chunks):
             logger.info(
@@ -206,25 +221,45 @@ class DailySummarizer:
                 else chunk
             )
 
-            try:
-                llm_resp1 = await self.llm_generate(
-                    prompt=user_prompt, system_prompt=chunk_system_prompt
-                )
-                content1 = self._extract_json(llm_resp1.completion_text)
-                data1 = json.loads(content1)
+            chunk_success = False
+            max_chunk_retries = 2  # 每个批次最多重试2次
+            
+            for chunk_attempt in range(max_chunk_retries):
+                try:
+                    llm_resp1 = await self.llm_generate(
+                        prompt=user_prompt, system_prompt=chunk_system_prompt
+                    )
+                    content1 = self._extract_json(llm_resp1.completion_text)
+                    data1 = json.loads(content1)
 
-                chunk_events = data1.get("events", [])
-                chunk_reflection = data1.get("daily_reflection", "")
+                    chunk_events = data1.get("events", [])
+                    chunk_reflection = data1.get("daily_reflection", "")
 
-                all_events.extend(chunk_events)
-                current_event_count += len(chunk_events)
-                if chunk_reflection:
-                    all_reflections.append(chunk_reflection)
-            except Exception as e:
-                logger.error(f"分段 {i + 1} 总结失败: {e}")
+                    all_events.extend(chunk_events)
+                    current_event_count += len(chunk_events)
+                    if chunk_reflection:
+                        all_reflections.append(chunk_reflection)
+                    chunk_success = True
+                    break
+                except json.JSONDecodeError as e:
+                    logger.warning(f"分段 {i + 1} 总结 JSON 解析失败 (尝试 {chunk_attempt + 1}/{max_chunk_retries}): {e}")
+                    if chunk_attempt < max_chunk_retries - 1:
+                        await asyncio.sleep(2 ** chunk_attempt)
+                except Exception as e:
+                    logger.warning(f"分段 {i + 1} 总结失败 (尝试 {chunk_attempt + 1}/{max_chunk_retries}): {e}")
+                    if chunk_attempt < max_chunk_retries - 1:
+                        await asyncio.sleep(2 ** chunk_attempt)
+            
+            if not chunk_success:
+                failed_chunks.append(i + 1)
+                logger.error(f"分段 {i + 1} 总结最终失败，已跳过")
+
+        # 如果有失败的批次，在结果中添加警告
+        if failed_chunks:
+            logger.warning(f"[APLR] 以下批次总结失败: {failed_chunks}，总结内容可能不完整")
 
         if not all_events and not all_reflections:
-            return None
+            return None, failed_chunks
 
         # 强制纠错与编号重建机制（解决 LLM 容易用明日日期错标、或编号断层、不连续、甚至不规范等问题）
         if all_events:
@@ -299,8 +334,8 @@ class DailySummarizer:
                 if nodes_result:
                     summary.nodes, summary.deleted_nodes = nodes_result
 
-            return summary
+            return summary, failed_chunks
 
         except Exception as e:
             logger.error(f"两阶段总结过程中发生错误: {e}", exc_info=True)
-            return summary  # 返回部分结果
+            return summary, failed_chunks  # 返回部分结果

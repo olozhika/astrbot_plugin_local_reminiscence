@@ -48,6 +48,7 @@ class LocalReminiscencePlugin(Star):
     _active_cron_umos = {}
     _last_cron_key = None
     _running_summaries = set()
+    _daily_summary_locks = {}
 
     def __init__(self, context: Context, config: any = None):
         super().__init__(context)
@@ -430,13 +431,6 @@ class LocalReminiscencePlugin(Star):
             )
 
     async def _run_automatic_daily_summary(self, target_date: str):
-        if target_date in self.__class__._running_summaries:
-            logger.info(
-                f"[APLR] 已经有一个自动每日总结任务正在运行该日期: {target_date}，跳过并发重复运行。"
-            )
-            return
-
-        self.__class__._running_summaries.add(target_date)
         logger.info(f"[APLR] 开始执行自动每日总结，日期: {target_date}")
         try:
             async for result in self._daily_summary_logic(
@@ -447,8 +441,6 @@ class LocalReminiscencePlugin(Star):
             logger.info(f"[APLR] 自动每日总结执行完毕，日期: {target_date}")
         except Exception as e:
             logger.error(f"[APLR] 自动每日总结执行遭遇异常: {e}", exc_info=True)
-        finally:
-            self.__class__._running_summaries.discard(target_date)
 
     async def _model_idle_check_loop(self):
         """向量模型闲置检测循环"""
@@ -504,7 +496,7 @@ class LocalReminiscencePlugin(Star):
 
                 core_db_path = self.core_db_path
                 if core_db_path.exists():
-                    conn = sqlite3.connect(str(core_db_path))
+                    conn = sqlite3.connect(str(core_db_path), timeout=35)
                     cursor = conn.cursor()
                     cursor.execute("SELECT DISTINCT user_id FROM conversations")
                     db_user_ids = [row[0] for row in cursor.fetchall() if row[0]]
@@ -1142,8 +1134,17 @@ class LocalReminiscencePlugin(Star):
                     last_updated_date = (
                         n["last_updated"].split(" ")[0] if n["last_updated"] else "未知"
                     )
+                    # 仅标注当前消息中实际用到的别名，避免向 LLM 泄露全部别名
+                    used_aliases = [
+                        a
+                        for a in (json.loads(n.get("aliases") or "[]"))
+                        if a and a in clean_message
+                    ]
+                    alias_str = (
+                        f"(别名: {', '.join(used_aliases)})" if used_aliases else ""
+                    )
                     context_parts.append(
-                        f"📌 {n['name']}，{n['description']}。(最后更新: {last_updated_date})"
+                        f"📌 {n['name']}{alias_str}，{n['description']}。(最后更新: {last_updated_date})"
                     )
 
                 injection_text = (
@@ -1718,8 +1719,11 @@ class LocalReminiscencePlugin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     async def daily_summary_command(self, event: AstrMessageEvent):
         """进行每日总结用的工具，回顾并总结今日或指定日期的交流。用法：/daily_summary_command [日期]（可选，默认今天，格式YYYY-MM-DD）。人类专用版！（仅管理员）"""
-        async for result in self._daily_summary_logic(event):
-            yield result
+        try:
+            async for result in self._daily_summary_logic(event):
+                yield result
+        finally:
+            event.stop_event()
 
     @filter.command_group("APLR_maintenance")
     @filter.permission_type(filter.PermissionType.ADMIN)
@@ -3013,6 +3017,27 @@ class LocalReminiscencePlugin(Star):
         if not date_str or not date_str.strip():
             date_str = self._get_logical_date(datetime.now())
 
+        # 并发保护：同一日期同时只允许一个总结任务运行
+        lock_key = date_str
+        if lock_key in self.__class__._daily_summary_locks:
+            msg = f"⚠️ 日期 {date_str} 的总结任务正在运行中，请勿重复触发。"
+            logger.info(f"[APLR] {msg}")
+            if event:
+                yield event.plain_result(msg)
+            return
+        lock = asyncio.Lock()
+        self.__class__._daily_summary_locks[lock_key] = lock
+        try:
+            async with lock:
+                async for result in self._daily_summary_logic_inner(event, date_str):
+                    yield result
+        finally:
+            self.__class__._daily_summary_locks.pop(lock_key, None)
+
+    async def _daily_summary_logic_inner(
+        self, event: AstrMessageEvent, date_str: str
+    ):
+
         effective_user_ids = self._get_effective_user_ids(date_str)
 
         # 检查是否已经存在该日期的实时记录 JSON
@@ -3280,16 +3305,55 @@ class LocalReminiscencePlugin(Star):
 
             if not provider_id:
                 logger.info("[APLR] 暂时连接不到大脑（LLM Provider），请检查配置。")
+                if event:
+                    yield event.plain_result("⚠️ 暂时连接不到 LLM，请检查 Provider 配置。")
                 return
 
-            # 2. 定义适配 DailySummarizer 的生成函数
+            # 2. 定义适配 DailySummarizer 的生成函数（带重试和 fallback 机制）
             async def llm_generate_func(prompt, system_prompt):
-                return await self.context.llm_generate(
-                    chat_provider_id=provider_id,
-                    prompt=prompt,
-                    system_prompt=system_prompt,
-                    history=[],
-                )
+                max_retries = 3
+                
+                # 获取 fallback providers
+                fallback_ids = self.context._config.get("provider_settings", {}).get("fallback_chat_models", [])
+                fallback_providers = []
+                for fallback_id in fallback_ids:
+                    if fallback_id and fallback_id != provider_id:
+                        try:
+                            fallback_prov = await self.context.provider_manager.get_provider_by_id(fallback_id)
+                            if fallback_prov:
+                                fallback_providers.append(fallback_prov)
+                        except Exception:
+                            pass
+                
+                # 尝试主 provider 和 fallback providers
+                providers_to_try = [provider_id] + [p.provider_config.get("id", "") for p in fallback_providers]
+                
+                for current_provider_id in providers_to_try:
+                    for attempt in range(max_retries):
+                        try:
+                            return await self.context.llm_generate(
+                                chat_provider_id=current_provider_id,
+                                prompt=prompt,
+                                system_prompt=system_prompt,
+                                history=[],
+                            )
+                        except Exception as e:
+                            if attempt < max_retries - 1:
+                                delay = 2 ** attempt  # 指数退避：1, 2, 4 秒
+                                logger.warning(f"[APLR] LLM 调用失败 (provider: {current_provider_id}, 尝试 {attempt + 1}/{max_retries}): {e}, {delay}秒后重试...")
+                                await asyncio.sleep(delay)
+                            else:
+                                logger.warning(f"[APLR] LLM 调用最终失败 (provider: {current_provider_id}, 已重试 {max_retries} 次): {e}")
+                                break  # 尝试下一个 provider
+                    else:
+                        # 主 provider 成功，直接返回
+                        continue
+                    # 主 provider 失败，尝试 fallback
+                    if current_provider_id != provider_id:
+                        logger.info(f"[APLR] 切换到 fallback provider: {current_provider_id}")
+                
+                # 所有 providers 都失败
+                raise Exception(f"所有 LLM providers 调用失败 (主 provider: {provider_id})")
 
             # 3. 获取基础提示词
             base_system_prompt = (
@@ -3374,7 +3438,7 @@ class LocalReminiscencePlugin(Star):
 
             # 5. 异步调用总结生成
             dr_nodes_config = self.config.get("dailyreview_nodes", {})
-            summary = await summarizer.generate_summary(
+            summary, failed_chunks = await summarizer.generate_summary(
                 conversation_chunks,
                 date_str,
                 existing_nodes_context=existing_nodes_context,
@@ -3413,10 +3477,39 @@ class LocalReminiscencePlugin(Star):
         except Exception as e:
             logger.error(f"[APLR] 生成总结过程中发生错误: {e}", exc_info=True)
             logger.info(f"[APLR] 生成总结过程中发生错误：{e}")
+            if event:
+                yield event.plain_result(f"⚠️ 生成总结时出错：{e}")
             return
 
         if summary is None:
             logger.info("[APLR] 诶，没能整理出有意义的总结呢")
+            if event:
+                # 用户触发 → 回复到该对话
+                if failed_chunks:
+                    yield event.plain_result(f"⚠️ 未能整理出有意义的总结，且第 {', '.join(map(str, failed_chunks))} 批次总结失败。请确认当天有足够对话内容。")
+                else:
+                    yield event.plain_result("⚠️ 未能整理出有意义的总结，请确认当天有足够对话内容。")
+            else:
+                # 插件自动定时总结 → 推送到 admin_session
+                admin_session = (
+                    self.config.get("day_boundary_config", {})
+                    .get("admin_session", "")
+                    .strip()
+                )
+                if admin_session:
+                    try:
+                        from astrbot.core.message.message_event_result import (
+                            MessageChain,
+                        )
+
+                        warn_msg = f"⚠️ {date_str} 自动总结完全失败：未能整理出有意义的总结"
+                        if failed_chunks:
+                            warn_msg += f"，且第 {', '.join(map(str, failed_chunks))} 批次总结失败"
+                        warn_msg += "。请确认当天有足够对话内容。"
+                        chain = MessageChain().message(warn_msg).build()
+                        await self.context.send_message(admin_session, chain)
+                    except Exception as ne:
+                        logger.warning(f"[APLR] 向 admin_session 投递总结失败警告失败: {ne}")
             return
 
         try:
@@ -3486,14 +3579,37 @@ class LocalReminiscencePlugin(Star):
 
             # 构建回复
             if event:
+                # 用户触发或 cron 挂对话 → 回复到该对话
                 yield event.plain_result(f"✨ {date_str} 的回忆整理好啦！\n\n")
                 resp = f"💭 我的感悟：{summary.daily_reflection}\n"
                 resp += f"📍 我记下了 {len(summary.events)} 个印象深刻的瞬间。"
+                if failed_chunks:
+                    resp += f"\n\n⚠️ 注意：第 {', '.join(map(str, failed_chunks))} 批次总结失败，总结内容可能不完整。"
                 yield event.plain_result(resp)
             else:
+                # 插件自动定时总结 → 推送到 admin_session
                 logger.info(f"[APLR] ✨ {date_str} 的回忆自动整理好了！")
                 logger.info(f"[APLR] 我的感悟：{summary.daily_reflection}")
                 logger.info(f"[APLR] 我记下了 {len(summary.events)} 个印象深刻的瞬间。")
+
+                admin_session = (
+                    self.config.get("day_boundary_config", {})
+                    .get("admin_session", "")
+                    .strip()
+                )
+                if admin_session:
+                    try:
+                        from astrbot.core.message.message_event_result import (
+                            MessageChain,
+                        )
+
+                        msg = f"✨ {date_str} 的回忆自动整理好啦！\n💭 感悟：{summary.daily_reflection}\n📍 记下了 {len(summary.events)} 个印象深刻的瞬间。"
+                        if failed_chunks:
+                            msg += f"\n\n⚠️ 注意：第 {', '.join(map(str, failed_chunks))} 批次总结失败，总结内容可能不完整。"
+                        chain = MessageChain().message(msg).build()
+                        await self.context.send_message(admin_session, chain)
+                    except Exception as ne:
+                        logger.warning(f"[APLR] 向 admin_session 投递自动总结结果失败: {ne}")
 
             # 检查是否需要提醒用户执行记忆聚类（大固化）
             try:

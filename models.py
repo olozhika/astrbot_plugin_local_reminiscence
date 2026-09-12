@@ -49,6 +49,9 @@ class MemoryNode(BaseModel):
     related_event_ids: List[str] = Field(
         default_factory=list, description="关联事件ID列表，记录与此节点相关的事件ID"
     )
+    related_theme_ids: List[str] = Field(
+        default_factory=list, description="关联主题ID列表，记录与此节点相关的聚类主题ID"
+    )
 
 
 class DailySummary(BaseModel):
