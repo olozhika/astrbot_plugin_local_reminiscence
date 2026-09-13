@@ -217,7 +217,10 @@ class MemoryDB:
             conn.commit()
 
     def insert_summary(
-        self, summary: DailySummary, known_node_names: set[str] | None = None
+        self,
+        summary: DailySummary,
+        known_node_names: set[str] | None = None,
+        ai_name: str = "",
     ):
         with self._get_conn() as conn:
             cursor = conn.cursor()
@@ -351,21 +354,60 @@ class MemoryDB:
                         )
 
             # 名称匹配：将节点名称和别名与事件叙述匹配，自动追加关联事件ID
+            # 使用最长匹配优先消歧：当多个节点名称同时匹配同一事件时，只保留最长匹配
+            # AI 节点特殊处理：仅关联有 reflection 的事件
             if (
                 hasattr(summary, "nodes")
                 and summary.nodes
                 and hasattr(summary, "events")
                 and summary.events
             ):
-                for node in summary.nodes:
-                    current_events = set(node.related_event_ids or [])
-                    for event in summary.events:
-                        narrative = (event.narrative or "").lower()
+                # 识别 AI 节点
+                ai_lower = ai_name.lower() if ai_name else ""
+                ai_node_names = set()
+                if ai_lower:
+                    for node in summary.nodes:
+                        if node.name.lower() == ai_lower:
+                            ai_node_names.add(node.name)
+                        elif any(a.lower() == ai_lower for a in (node.aliases or [])):
+                            ai_node_names.add(node.name)
+
+                # 为每个事件收集所有匹配的节点及其匹配长度
+                ev_matches: dict[str, dict[str, int]] = {}
+                for event in summary.events:
+                    narrative = (event.narrative or "").lower()
+                    importance = event.importance or 0
+                    matches = {}
+                    for node in summary.nodes:
+                        # AI 节点特殊匹配：仅关联重要性 >= 8 的事件
+                        if node.name in ai_node_names:
+                            if importance >= 8:
+                                matches[node.name] = len(node.name)
+                            continue
                         if node.name and node.name.lower() in narrative:
-                            current_events.add(event.event_id)
+                            matches[node.name] = max(
+                                matches.get(node.name, 0), len(node.name)
+                            )
                         for alias in node.aliases or []:
                             if alias and alias.lower() in narrative:
-                                current_events.add(event.event_id)
+                                matches[node.name] = max(
+                                    matches.get(node.name, 0), len(alias)
+                                )
+                    if matches:
+                        ev_matches[event.event_id] = matches
+
+                # 只把事件分配给达到最长匹配的节点
+                node_event_map: dict[str, set[str]] = {
+                    n.name: set(n.related_event_ids or []) for n in summary.nodes
+                }
+                for ev_id, matches in ev_matches.items():
+                    max_len = max(matches.values())
+                    for node_name, match_len in matches.items():
+                        if match_len == max_len:
+                            node_event_map[node_name].add(ev_id)
+
+                for node in summary.nodes:
+                    current_events = node_event_map.get(node.name, set())
                     if current_events:
                         new_serialized = json.dumps(
                             sorted(current_events), ensure_ascii=False
@@ -597,6 +639,20 @@ class MemoryDB:
             rows = cursor.fetchall()
             return [dict(row) for row in rows]
 
+    def get_event_count(self) -> int:
+        """返回事件总数"""
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM events")
+            return cursor.fetchone()[0]
+
+    def get_node_count(self) -> int:
+        """返回节点总数"""
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM nodes")
+            return cursor.fetchone()[0]
+
     def get_events_by_date(self, date: str) -> List[dict]:
         """获取指定日期的所有事件"""
         with self._get_conn() as conn:
@@ -652,7 +708,17 @@ class MemoryDB:
     def search_nodes(
         self, query: str, limit: int = 1, include_description: bool = True
     ) -> List[dict]:
-        """模糊搜索节点，匹配名称、别名或描述。"""
+        """模糊搜索节点，匹配名称、别名或描述。
+
+        排序优先级：
+        0. 名称完全一致
+        1. 别名精确匹配（作为 JSON 数组中的独立元素）
+        2. 名称前缀匹配
+        3. 别名前缀匹配（作为 JSON 数组中的独立元素）
+        4. 名称包含
+        5. 别名包含
+        6. 描述包含
+        """
         with self._get_conn() as conn:
             cursor = conn.cursor()
             lower_query = query.lower()
@@ -671,13 +737,19 @@ class MemoryDB:
             # 防僵尸节点：排除"标记删除"的节点（描述被改成删除标记但条目仍在库中，会被误召回导致已删内容复活）
             where_clause = f"({where_clause}) AND (description IS NULL OR (description NOT LIKE '已删除%' AND description NOT LIKE '（节点已彻底移除%'))"
 
-            # 排序：名称完全一致 > 别名完全一致 > 名称开头 > 别名开头 > 名称包含 > 别名包含 > 描述包含
+            # aliases 列存的是 JSON 数组，如 '["olozhika", "olO"]'。
+            # 精确匹配：检查查询是否作为独立元素出现在 JSON 中（带双引号边界）。
+            # 例如 aliases='["olozhika"]' + query='olozhika' → '%"olozhika"%' 匹配成功。
+            alias_exact_pat = f'%"{lower_query}"%'
+            alias_prefix_pat = f'%"{lower_query}%'
+
+            # 排序：名称完全一致 > 别名精确匹配 > 名称前缀 > 别名前缀 > 名称包含 > 别名包含 > 描述包含
             params.extend(
                 [
                     lower_query,
-                    lower_query,
+                    alias_exact_pat,
                     f"{lower_query}%",
-                    f"{lower_query}%",
+                    alias_prefix_pat,
                     f"%{lower_query}%",
                     f"%{lower_query}%",
                     limit,
@@ -869,40 +941,89 @@ class MemoryDB:
             """)
             return [dict(row) for row in cursor.fetchall()]
 
-    def backfill_node_relations(self) -> int:
+    def backfill_node_relations(self, ai_name: str = "") -> int:
         """全量回填：遍历所有事件和节点，通过名称/别名匹配建立 related_event_ids 关联。
-        同时回填主题节点关联。返回更新的节点数。"""
+        同时回填主题节点关联。返回更新的节点数。
+
+        消歧策略：当多个节点名称（或别名）同时匹配同一个事件时，只保留名称最长的节点，
+        避免短名称（如"协会"）误匹配到本应属于长名称（如"XX协会"）的事件。
+
+        AI 节点特殊处理：由于事件以第一人称记录（"我如何如何"），AI 名字不会出现在
+        事件叙述中。对于 AI 名字对应的节点，仅关联 reflection 非空的事件（即有深度
+        感想的事件，代表与 AI 认知成长相关的记忆）。
+        """
         with self._get_conn() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM nodes")
             all_nodes = [dict(row) for row in cursor.fetchall()]
-            cursor.execute("SELECT event_id, narrative FROM events")
+            cursor.execute("SELECT event_id, narrative, importance FROM events")
             all_events = [dict(row) for row in cursor.fetchall()]
 
+            # 识别 AI 节点（名称或别名匹配 ai_name 的节点）
+            ai_node_names = set()
+            if ai_name:
+                ai_lower = ai_name.lower()
+                for node in all_nodes:
+                    if node["name"].lower() == ai_lower:
+                        ai_node_names.add(node["name"])
+                        continue
+                    aliases = json.loads(node.get("aliases") or "[]")
+                    if any(a.lower() == ai_lower for a in aliases):
+                        ai_node_names.add(node["name"])
+
+            # 第一轮：为每个事件收集所有匹配的节点名称，记录最长匹配
+            # event_id -> { matched_node_name: max_match_len }
+            event_match_map: dict[str, dict[str, int]] = {}
+            for ev in all_events:
+                ev_id = ev["event_id"]
+                narrative_lower = (ev["narrative"] or "").lower()
+                importance = ev.get("importance") or 0
+                matches = {}
+                for node in all_nodes:
+                    name = node["name"]
+                    # AI 节点特殊匹配：仅关联重要性 >= 8 的事件
+                    if name in ai_node_names:
+                        if importance >= 8:
+                            matches[name] = len(name)
+                        continue
+                    aliases = json.loads(node.get("aliases") or "[]")
+                    # 检查主名称
+                    if name and name.lower() in narrative_lower:
+                        match_len = len(name)
+                        if name not in matches or match_len > matches[name]:
+                            matches[name] = match_len
+                    # 检查别名
+                    for alias in aliases:
+                        if alias and alias.lower() in narrative_lower:
+                            match_len = len(alias)
+                            if name not in matches or match_len > matches[name]:
+                                matches[name] = match_len
+                if matches:
+                    event_match_map[ev_id] = matches
+
+            # 第二轮：对每个事件，找出最长匹配长度，只把事件分配给达到该长度的节点
+            # node_name -> set of event_ids
+            node_events: dict[str, set[str]] = {n["name"]: set() for n in all_nodes}
+            for ev_id, matches in event_match_map.items():
+                if not matches:
+                    continue
+                max_len = max(matches.values())
+                for node_name, match_len in matches.items():
+                    if match_len == max_len:
+                        node_events[node_name].add(ev_id)
+
+            # 第三轮：写入数据库（仅更新有变化的节点）
             updated_count = 0
             for node in all_nodes:
                 name = node["name"]
-                aliases = set(json.loads(node.get("aliases") or "[]"))
-                matched_ids = set(json.loads(node.get("related_event_ids") or "[]"))
-                changed = False
-
-                for ev in all_events:
-                    narrative_lower = (ev["narrative"] or "").lower()
-                    if name and name.lower() in narrative_lower:
-                        if ev["event_id"] not in matched_ids:
-                            matched_ids.add(ev["event_id"])
-                            changed = True
-                    for alias in aliases:
-                        if alias and alias.lower() in narrative_lower:
-                            if ev["event_id"] not in matched_ids:
-                                matched_ids.add(ev["event_id"])
-                                changed = True
-
-                if changed:
+                existing_ids = set(json.loads(node.get("related_event_ids") or "[]"))
+                new_ids = node_events.get(name, set())
+                merged = existing_ids | new_ids
+                if merged != existing_ids:
                     cursor.execute(
                         "UPDATE nodes SET related_event_ids = ? WHERE name = ?",
                         (
-                            json.dumps(sorted(matched_ids), ensure_ascii=False),
+                            json.dumps(sorted(merged), ensure_ascii=False),
                             name,
                         ),
                     )
@@ -964,6 +1085,15 @@ class MemoryDB:
 
             conn.commit()
             return updated_count
+
+    def has_any_node_relations(self) -> bool:
+        """检查是否已有任何节点建立了事件关联（用于判断是否需要启动时自动回填）。"""
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT 1 FROM nodes WHERE related_event_ids IS NOT NULL AND related_event_ids != '[]' LIMIT 1"
+            )
+            return cursor.fetchone() is not None
 
     def get_first_level_connected_nodes(self, node_name: str) -> List[dict]:
         """从指定节点出发，找所有一级连接节点（通过共享事件直接相连）。

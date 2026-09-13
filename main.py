@@ -7,7 +7,7 @@ import jieba
 import jieba.analyse
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict
+from typing import List
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register, StarTools
 from astrbot.api import logger, llm_tool
@@ -241,6 +241,35 @@ class LocalReminiscencePlugin(Star):
         # 延迟初始化固化器，因为需要 LLM 函数
         self.consolidator = None
 
+        # 启动时自动回填：如果已有节点和事件但没有任何关联，自动执行一次全量回填
+        try:
+            if (
+                self.db.has_any_node_relations() is False
+                and self.db.get_event_count() > 0
+                and self.db.get_node_count() > 0
+            ):
+                logger.info(
+                    "[APLR] 检测到节点与事件均存在但无关联，自动执行首次回填..."
+                )
+                updated = self.db.backfill_node_relations(ai_name=self.ai_name)
+                logger.info(f"[APLR] 首次自动回填完成，更新了 {updated} 个节点。")
+        except Exception as _e:
+            logger.warning(f"[APLR] 启动时自动回填失败: {_e}")
+
+        try:
+            from astrbot.core.star.star_handler import star_handlers_registry
+            from astrbot.core.star.star import star_map
+
+            my_module = self.__class__.__module__
+            my_handlers = star_handlers_registry.get_handlers_by_module_name(my_module)
+            logger.info(
+                f"[APLR] Plugin loaded. module={my_module}, "
+                f"handlers_in_registry={len(my_handlers)}, "
+                f"star_map_active={star_map.get(my_module, None) and star_map[my_module].activated}"
+            )
+        except Exception as _diag_e:
+            logger.warning(f"[APLR] Plugin load log failed: {_diag_e}")
+
     def _parse_cron_time(self, cron_str: str) -> tuple[int, int]:
         """从 cron 字符串中解析出小时和分钟。
         假定格式为 'm h * * *' (例如 '0 4 * * *')。如果是其他复杂/不合法格式，兜底返回 (4, 0) 代表凌晨4点。
@@ -465,6 +494,103 @@ class LocalReminiscencePlugin(Star):
             return True
         return unified_id in target_list
 
+    def _open_core_db_readonly(self, db_path) -> "sqlite3.Connection":
+        """Open a read-only sqlite3 connection to the AstrBot core database.
+
+        The core database runs in WAL mode, and the main AstrBot process holds
+        it open for read/write. Opening a second connection from within the
+        plugin can trigger ``disk I/O error`` on some filesystems (network
+        mounts, containers, FUSE) because WAL mode requires a shared-memory
+        file (``-shm``) that may be inaccessible.
+
+        ``timeout=`` only helps with ``SQLITE_BUSY`` (lock contention); it does
+        NOT help with ``SQLITE_IOERR`` (disk I/O error). This helper tries
+        multiple strategies in order:
+
+        1. Read-only URI mode (``mode=ro``) — still needs ``-shm`` for WAL.
+        2. Immutable URI mode (``immutable=1``) — bypasses WAL entirely, reads
+           only the main ``.db`` file. May miss uncheckpointed WAL data, but
+           for historical daily summaries this is acceptable.
+        3. Copy the ``.db`` (and ``-wal`` if present) to a temp file and read
+           the copy — fully decouples from the main process's locks.
+
+        Returns an open ``sqlite3.Connection``. The caller is responsible for
+        closing it. If the connection was opened from a temp copy, it is stored
+        in ``conn._aplr_temp_copy`` so the caller can clean it up.
+        """
+        import sqlite3
+        import tempfile
+        import time as _time
+
+        p = Path(db_path)
+        if not p.exists():
+            raise FileNotFoundError(f"❌ 数据库不存在: {p}")
+
+        # Strategy 1: read-only URI (reads WAL if accessible)
+        try:
+            conn = sqlite3.connect(f"file:{p}?mode=ro", uri=True, timeout=35)
+            conn.execute("SELECT 1").fetchone()
+            return conn
+        except Exception as e1:
+            logger.warning(
+                f"[APLR] read-only DB open failed ({e1}), trying immutable mode..."
+            )
+
+        # Strategy 2: immutable URI (bypasses WAL, reads main file only)
+        try:
+            conn = sqlite3.connect(f"file:{p}?immutable=1", uri=True)
+            conn.execute("SELECT 1").fetchone()
+            logger.info("[APLR] Opened core DB in immutable mode (bypassing WAL).")
+            return conn
+        except Exception as e2:
+            logger.warning(
+                f"[APLR] immutable DB open failed ({e2}), trying copy strategy..."
+            )
+
+        # Strategy 3: copy the database file and read the copy
+        import shutil
+
+        tmp_dir = Path(tempfile.gettempdir())
+        tmp_db = tmp_dir / f"aplr_core_copy_{int(_time.time())}.db"
+        shutil.copy2(p, tmp_db)
+        wal_src = Path(str(p) + "-wal")
+        if wal_src.exists():
+            shutil.copy2(wal_src, Path(str(tmp_db) + "-wal"))
+        shm_src = Path(str(p) + "-shm")
+        if shm_src.exists():
+            shutil.copy2(shm_src, Path(str(tmp_db) + "-shm"))
+
+        conn = sqlite3.connect(str(tmp_db), timeout=35)
+        try:
+            conn.execute("SELECT 1").fetchone()
+        except Exception as e3:
+            conn.close()
+            tmp_db.unlink(missing_ok=True)
+            raise RuntimeError(f"❌ 无法读取核心数据库 (tried ro/immutable/copy): {e3}")
+        conn._aplr_temp_copy = tmp_db
+        logger.info(f"[APLR] Opened core DB from temp copy: {tmp_db}")
+        return conn
+
+    @staticmethod
+    def _close_core_db_conn(conn):
+        """Close a connection opened by _open_core_db_readonly and clean up temp copy."""
+        if conn is None:
+            return
+        tmp = getattr(conn, "_aplr_temp_copy", None)
+        try:
+            conn.close()
+        except Exception:
+            pass
+        if tmp:
+            try:
+                tmp.unlink(missing_ok=True)
+            except Exception:
+                pass
+            wal = Path(str(tmp) + "-wal")
+            shm = Path(str(tmp) + "-shm")
+            wal.unlink(missing_ok=True)
+            shm.unlink(missing_ok=True)
+
     def _get_effective_user_ids(self, date_str: str = None) -> List[str]:
         """获取需要导出的实际会话ID列表，当配置为['all']时自动检索所有用户的ID"""
         target_list = (
@@ -492,15 +618,15 @@ class LocalReminiscencePlugin(Star):
 
             # 2. 从核心数据库获取所有用户 ID（用于未开启实时录制但需提取全部的情况）
             try:
-                import sqlite3
-
                 core_db_path = self.core_db_path
                 if core_db_path.exists():
-                    conn = sqlite3.connect(str(core_db_path), timeout=35)
-                    cursor = conn.cursor()
-                    cursor.execute("SELECT DISTINCT user_id FROM conversations")
-                    db_user_ids = [row[0] for row in cursor.fetchall() if row[0]]
-                    conn.close()
+                    conn = self._open_core_db_readonly(core_db_path)
+                    try:
+                        cursor = conn.cursor()
+                        cursor.execute("SELECT DISTINCT user_id FROM conversations")
+                        db_user_ids = [row[0] for row in cursor.fetchall() if row[0]]
+                    finally:
+                        self._close_core_db_conn(conn)
                     for db_uid in db_user_ids:
                         # 为了避免带有冒号的真正 ID 与从文件名解析的下划线 ID 重复，
                         # 如果发现它的规范化下划线版本已在列表中，先将其移除，然后追加带冒号的真实 ID
@@ -961,13 +1087,13 @@ class LocalReminiscencePlugin(Star):
                             )
 
             if not current_nickname:
-                logger.debug(f"[APLR] 无法从消息中提取 Nickname")
+                logger.debug("[APLR] 无法从消息中提取 Nickname")
             else:
                 logger.info(
                     f"[APLR] 融合模块提取的当前对话用户昵称: {current_nickname}"
                 )
             if not current_group_name:
-                logger.debug(f"[APLR] 无法从消息中提取 Group Name")
+                logger.debug("[APLR] 无法从消息中提取 Group Name")
             else:
                 logger.info(
                     f"[APLR] 融合模块提取的当前对话群聊名称: {current_group_name}"
@@ -1148,7 +1274,7 @@ class LocalReminiscencePlugin(Star):
                     )
 
                 injection_text = (
-                    f"\n\n【记忆节点背景 - 对提及实体及当前聊天对象的已知认知】\n"
+                    "\n\n【记忆节点背景 - 对提及实体及当前聊天对象的已知认知】\n"
                     + "\n\n".join(context_parts)
                     + "\n"
                 )
@@ -1572,7 +1698,7 @@ class LocalReminiscencePlugin(Star):
                     )
 
             # 4. 特殊处理 send_message_to_user 工具：记录 AI 发送给用户的真实话语
-            if tool_name == "send_message_to_user" and not (is_error is True):
+            if tool_name == "send_message_to_user" and is_error is not True:
                 try:
                     target_session = tool_args.get("session")
                     target_unified_id = (
@@ -1808,7 +1934,7 @@ class LocalReminiscencePlugin(Star):
         except Exception as e:
             logger.error(f"[APLR] 手动加载向量模型失败: {e}", exc_info=True)
             yield event.plain_result(
-                f"❌ 向量模型加载失败: {e}\n建议检查网络连接或尝试手动下载模型。\n手动下载模型方法\n1. 访问镜像站下载地址：hf-mirror.com/.../paraphrase-multilingual-MiniLM-L12-v2 \n2. （像使用github一样）下载该页面下的所有文件（尤其是 pytorch_model.bin 或 model.safetensors）。 \n3. 在本地创建一个文件夹（例如 D:\AI_Models\paraphrase-multilingual-MiniLM-L12-v2），把下载的文件全部放进去 \n4. 修改插件配置：在插件设置的 embedding_model 项中，直接填写这个本地文件夹的绝对路径（例如 D:\AI_Models\paraphrase-multilingual-MiniLM-L12-v2）。\n5. 重启 AstrBot。"
+                f"❌ 向量模型加载失败: {e}\n建议检查网络连接或尝试手动下载模型。\n手动下载模型方法\n1. 访问镜像站下载地址：hf-mirror.com/.../paraphrase-multilingual-MiniLM-L12-v2 \n2. （像使用github一样）下载该页面下的所有文件（尤其是 pytorch_model.bin 或 model.safetensors）。 \n3. 在本地创建一个文件夹（例如 D:\\AI_Models\\paraphrase-multilingual-MiniLM-L12-v2），把下载的文件全部放进去 \n4. 修改插件配置：在插件设置的 embedding_model 项中，直接填写这个本地文件夹的绝对路径（例如 D:\\AI_Models\\paraphrase-multilingual-MiniLM-L12-v2）。\n5. 重启 AstrBot。"
             )
 
     @aplr_maintenance_group.command("delete_daily_summary")
@@ -1880,7 +2006,7 @@ class LocalReminiscencePlugin(Star):
             if deleted_files_count > 0:
                 msg += f"\n- 删除了 {deleted_files_count} 个当日的聊天日志文件"
             else:
-                msg += f"\n- 未在该日发现对应的聊天日志文件"
+                msg += "\n- 未在该日发现对应的聊天日志文件"
 
             yield event.plain_result(msg)
         except Exception as e:
@@ -2001,7 +2127,7 @@ class LocalReminiscencePlugin(Star):
     async def backfill_node_relations_command(self, event: AstrMessageEvent):
         """全量回填：遍历所有事件和节点，通过名称/别名匹配建立节点与事件的关联。用法：/APLR_maintenance backfill_node_relations"""
         try:
-            updated = self.db.backfill_node_relations()
+            updated = self.db.backfill_node_relations(ai_name=self.ai_name)
             yield event.plain_result(
                 f"✅ 已全量回填节点关联事件，更新了 {updated} 个节点。"
             )
@@ -2073,7 +2199,7 @@ class LocalReminiscencePlugin(Star):
                         if base_system_prompt
                         else (persona["prompt"] + "\n")
                     )
-                    logger.debug(f"已注入Astrbot人格设定")
+                    logger.debug("已注入Astrbot人格设定")
                     logger.debug(f"base sys prompt: {base_system_prompt}")
             except Exception as pe:
                 logger.warning(f"[APLR] 尝试获取 Astrbot 人格设定失败: {pe}")
@@ -2650,7 +2776,7 @@ class LocalReminiscencePlugin(Star):
             selected_items.extend(random.sample(remaining, min(len(remaining), m2)))
 
         # 6. 格式化输出 (基于主题的分组展示)
-        resp = f"🔍 回想起了相关记忆：\n\n"
+        resp = "🔍 回想起了相关记忆：\n\n"
 
         # 组织数据结构：{ theme_id: { "theme": theme_data, "events": [event_data] } }
         # 使用 "none" 作为无主题事件的 key
@@ -3034,9 +3160,7 @@ class LocalReminiscencePlugin(Star):
         finally:
             self.__class__._daily_summary_locks.pop(lock_key, None)
 
-    async def _daily_summary_logic_inner(
-        self, event: AstrMessageEvent, date_str: str
-    ):
+    async def _daily_summary_logic_inner(self, event: AstrMessageEvent, date_str: str):
 
         effective_user_ids = self._get_effective_user_ids(date_str)
 
@@ -3261,7 +3385,7 @@ class LocalReminiscencePlugin(Star):
                                 interim_header + conversation_chunks[0]
                             )
                             logger.info(
-                                f"[APLR] 已成功注入 thoughts 插件的中期记忆到第一段总结背景中。"
+                                "[APLR] 已成功注入 thoughts 插件的中期记忆到第一段总结背景中。"
                             )
                 except Exception as e:
                     logger.error(f"[APLR] 读取 thoughts 中期记忆失败: {e}")
@@ -3306,28 +3430,38 @@ class LocalReminiscencePlugin(Star):
             if not provider_id:
                 logger.info("[APLR] 暂时连接不到大脑（LLM Provider），请检查配置。")
                 if event:
-                    yield event.plain_result("⚠️ 暂时连接不到 LLM，请检查 Provider 配置。")
+                    yield event.plain_result(
+                        "⚠️ 暂时连接不到 LLM，请检查 Provider 配置。"
+                    )
                 return
 
             # 2. 定义适配 DailySummarizer 的生成函数（带重试和 fallback 机制）
             async def llm_generate_func(prompt, system_prompt):
                 max_retries = 3
-                
+
                 # 获取 fallback providers
-                fallback_ids = self.context._config.get("provider_settings", {}).get("fallback_chat_models", [])
+                fallback_ids = self.context._config.get("provider_settings", {}).get(
+                    "fallback_chat_models", []
+                )
                 fallback_providers = []
                 for fallback_id in fallback_ids:
                     if fallback_id and fallback_id != provider_id:
                         try:
-                            fallback_prov = await self.context.provider_manager.get_provider_by_id(fallback_id)
+                            fallback_prov = (
+                                await self.context.provider_manager.get_provider_by_id(
+                                    fallback_id
+                                )
+                            )
                             if fallback_prov:
                                 fallback_providers.append(fallback_prov)
                         except Exception:
                             pass
-                
+
                 # 尝试主 provider 和 fallback providers
-                providers_to_try = [provider_id] + [p.provider_config.get("id", "") for p in fallback_providers]
-                
+                providers_to_try = [provider_id] + [
+                    p.provider_config.get("id", "") for p in fallback_providers
+                ]
+
                 for current_provider_id in providers_to_try:
                     for attempt in range(max_retries):
                         try:
@@ -3339,21 +3473,29 @@ class LocalReminiscencePlugin(Star):
                             )
                         except Exception as e:
                             if attempt < max_retries - 1:
-                                delay = 2 ** attempt  # 指数退避：1, 2, 4 秒
-                                logger.warning(f"[APLR] LLM 调用失败 (provider: {current_provider_id}, 尝试 {attempt + 1}/{max_retries}): {e}, {delay}秒后重试...")
+                                delay = 2**attempt  # 指数退避：1, 2, 4 秒
+                                logger.warning(
+                                    f"[APLR] LLM 调用失败 (provider: {current_provider_id}, 尝试 {attempt + 1}/{max_retries}): {e}, {delay}秒后重试..."
+                                )
                                 await asyncio.sleep(delay)
                             else:
-                                logger.warning(f"[APLR] LLM 调用最终失败 (provider: {current_provider_id}, 已重试 {max_retries} 次): {e}")
+                                logger.warning(
+                                    f"[APLR] LLM 调用最终失败 (provider: {current_provider_id}, 已重试 {max_retries} 次): {e}"
+                                )
                                 break  # 尝试下一个 provider
                     else:
                         # 主 provider 成功，直接返回
                         continue
                     # 主 provider 失败，尝试 fallback
                     if current_provider_id != provider_id:
-                        logger.info(f"[APLR] 切换到 fallback provider: {current_provider_id}")
-                
+                        logger.info(
+                            f"[APLR] 切换到 fallback provider: {current_provider_id}"
+                        )
+
                 # 所有 providers 都失败
-                raise Exception(f"所有 LLM providers 调用失败 (主 provider: {provider_id})")
+                raise Exception(
+                    f"所有 LLM providers 调用失败 (主 provider: {provider_id})"
+                )
 
             # 3. 获取基础提示词
             base_system_prompt = (
@@ -3486,9 +3628,13 @@ class LocalReminiscencePlugin(Star):
             if event:
                 # 用户触发 → 回复到该对话
                 if failed_chunks:
-                    yield event.plain_result(f"⚠️ 未能整理出有意义的总结，且第 {', '.join(map(str, failed_chunks))} 批次总结失败。请确认当天有足够对话内容。")
+                    yield event.plain_result(
+                        f"⚠️ 未能整理出有意义的总结，且第 {', '.join(map(str, failed_chunks))} 批次总结失败。请确认当天有足够对话内容。"
+                    )
                 else:
-                    yield event.plain_result("⚠️ 未能整理出有意义的总结，请确认当天有足够对话内容。")
+                    yield event.plain_result(
+                        "⚠️ 未能整理出有意义的总结，请确认当天有足够对话内容。"
+                    )
             else:
                 # 插件自动定时总结 → 推送到 admin_session
                 admin_session = (
@@ -3502,14 +3648,18 @@ class LocalReminiscencePlugin(Star):
                             MessageChain,
                         )
 
-                        warn_msg = f"⚠️ {date_str} 自动总结完全失败：未能整理出有意义的总结"
+                        warn_msg = (
+                            f"⚠️ {date_str} 自动总结完全失败：未能整理出有意义的总结"
+                        )
                         if failed_chunks:
                             warn_msg += f"，且第 {', '.join(map(str, failed_chunks))} 批次总结失败"
                         warn_msg += "。请确认当天有足够对话内容。"
                         chain = MessageChain().message(warn_msg).build()
                         await self.context.send_message(admin_session, chain)
                     except Exception as ne:
-                        logger.warning(f"[APLR] 向 admin_session 投递总结失败警告失败: {ne}")
+                        logger.warning(
+                            f"[APLR] 向 admin_session 投递总结失败警告失败: {ne}"
+                        )
             return
 
         try:
@@ -3561,7 +3711,21 @@ class LocalReminiscencePlugin(Star):
                 )
 
             # 存储到数据库
-            self.db.insert_summary(summary, known_node_names=known_node_names)
+            self.db.insert_summary(
+                summary, known_node_names=known_node_names, ai_name=self.ai_name
+            )
+
+            # 增量回填节点关联：新总结可能为节点追加了别名，使得之前无法匹配的旧事件现在能匹配上
+            try:
+                updated_relations = self.db.backfill_node_relations(
+                    ai_name=self.ai_name
+                )
+                if updated_relations:
+                    logger.info(
+                        f"[APLR] 每日总结后增量回填完成，更新了 {updated_relations} 个节点的关联。"
+                    )
+            except Exception as rel_err:
+                logger.warning(f"[APLR] 每日总结后增量回填失败: {rel_err}")
 
             # 自动向量化当天的事件
             try:
@@ -3609,7 +3773,9 @@ class LocalReminiscencePlugin(Star):
                         chain = MessageChain().message(msg).build()
                         await self.context.send_message(admin_session, chain)
                     except Exception as ne:
-                        logger.warning(f"[APLR] 向 admin_session 投递自动总结结果失败: {ne}")
+                        logger.warning(
+                            f"[APLR] 向 admin_session 投递自动总结结果失败: {ne}"
+                        )
 
             # 检查是否需要提醒用户执行记忆聚类（大固化）
             try:
@@ -3647,9 +3813,6 @@ class LocalReminiscencePlugin(Star):
                         if admin_session:
                             from astrbot.core.message.message_event_result import (
                                 MessageChain,
-                            )
-                            from astrbot.core.platform.astr_message_event import (
-                                MessageSesion,
                             )
 
                             chain = MessageChain().message(reminder_msg).build()

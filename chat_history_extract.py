@@ -3,9 +3,77 @@ import os
 import json
 import sqlite3
 import sys
+import shutil
+import tempfile
+import time as _time
 from datetime import datetime
 from collections import defaultdict
 from pathlib import Path
+
+
+def _open_db_readonly(db_path):
+    """Open a read-only sqlite3 connection with multi-strategy fallback.
+
+    The AstrBot core database runs in WAL mode. Opening a second connection
+    can trigger ``disk I/O error`` on some filesystems (network mounts,
+    containers) because WAL mode requires a shared-memory file (``-shm``).
+
+    ``timeout=`` only helps with ``SQLITE_BUSY``, NOT ``SQLITE_IOERR``.
+    This helper tries: 1) read-only URI, 2) immutable URI, 3) copy-and-read.
+    """
+    p = Path(db_path)
+    if not p.exists():
+        raise FileNotFoundError(f"❌ 数据库不存在: {p}")
+
+    # Strategy 1: read-only URI (reads WAL if accessible)
+    try:
+        conn = sqlite3.connect(f"file:{p}?mode=ro", uri=True, timeout=35)
+        conn.execute("SELECT 1").fetchone()
+        return conn, None
+    except Exception:
+        pass
+
+    # Strategy 2: immutable URI (bypasses WAL, reads main file only)
+    try:
+        conn = sqlite3.connect(f"file:{p}?immutable=1", uri=True)
+        conn.execute("SELECT 1").fetchone()
+        return conn, None
+    except Exception:
+        pass
+
+    # Strategy 3: copy the database file and read the copy
+    tmp_dir = Path(tempfile.gettempdir())
+    tmp_db = tmp_dir / f"aplr_core_copy_{int(_time.time())}.db"
+    shutil.copy2(p, tmp_db)
+    wal_src = Path(str(p) + "-wal")
+    if wal_src.exists():
+        shutil.copy2(wal_src, Path(str(tmp_db) + "-wal"))
+    shm_src = Path(str(p) + "-shm")
+    if shm_src.exists():
+        shutil.copy2(shm_src, Path(str(tmp_db) + "-shm"))
+
+    conn = sqlite3.connect(str(tmp_db), timeout=35)
+    try:
+        conn.execute("SELECT 1").fetchone()
+    except Exception as e:
+        conn.close()
+        tmp_db.unlink(missing_ok=True)
+        raise RuntimeError(f"❌ 无法读取数据库 (tried ro/immutable/copy): {e}")
+    return conn, tmp_db
+
+
+def _close_db_conn(conn, tmp_path=None):
+    """Close a connection and clean up temp copy if any."""
+    if conn is None:
+        return
+    try:
+        conn.close()
+    except Exception:
+        pass
+    if tmp_path:
+        Path(tmp_path).unlink(missing_ok=True)
+        Path(str(tmp_path) + "-wal").unlink(missing_ok=True)
+        Path(str(tmp_path) + "-shm").unlink(missing_ok=True)
 
 
 def decode_json_unicode(s):
@@ -86,7 +154,7 @@ def clean_dialogue_with_different_limits(
     if not db_path.exists():
         raise FileNotFoundError(f"❌ 数据库不存在: {db_path}")
 
-    conn = sqlite3.connect(str(db_path), timeout=35)
+    conn, tmp_db_path = _open_db_readonly(db_path)
     conn.row_factory = sqlite3.Row
     try:
         cursor = conn.cursor()
@@ -100,7 +168,7 @@ def clean_dialogue_with_different_limits(
     except Exception as e:
         raise RuntimeError(f"❌ 读取数据库失败: {e}")
     finally:
-        conn.close()
+        _close_db_conn(conn, tmp_db_path)
 
     if not rows:
         print(f"⚠️ 没有找到用户 {target_user_id} 的聊天记录")
