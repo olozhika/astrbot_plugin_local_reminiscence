@@ -106,113 +106,24 @@
 
 所有指令仅限管理员使用。此处的'/'是Astrbot自带的唤醒词，如果你已经把唤醒词调整过了，请使用你设置的字符，比如`#daily_summary_command [YYYY-MM-DD]`
 
-### 核心指令
-
-#### `/daily_summary_command [YYYY-MM-DD]`
-
-手动触发指定日期的每日总结。
-
-- 参数可选，不传则总结今天
-- 会自动读取目标会话的全部聊天记录，经过两阶段 LLM 总结后存储事件、节点、向量
-- 示例：`/daily_summary_command 2026-06-27`
-
-#### `/memory_consolidation`
-
-执行全局记忆主题归类（大固化）。
-
-- 重新聚类所有事件并生成主题总结
-- 建议事件数至少 ≥ 200 条时执行
-- 处理时间较长，请耐心等待
-- 每隔数月到数年重新执行一次即可
-
-### APLR_recall 指令组
-
-#### `APLR_recall memory [text] [count]`
-
-根据输入文本搜索相关记忆。
-
-- 参数：`text` 搜索关键词，`count` 返回条数（可选，默认 5）
-- 示例：`/APLR_recall memory 火锅 3`
-
-#### `APLR_recall deep [target] [mode]`
-
-深度回想。支持三种目标类型：
-- 事件 ID：`evt_20260627_001`
-- 主题 ID：`theme_001`
-- 日期：`2026-06-27`
-
-模式参数（仅对主题 ID 生效）：
-- `类人`：均衡（时间、重要性、情感综合）
-- `时间`：侧重近期记忆
-- `情绪`：侧重强烈情感
-- `随机`：完全随机
-- 留空则使用系统默认权重
-- 示例：`/APLR_recall deep theme_001 类人`
-
-#### `APLR_recall recent [days] [min_score]`
-
-获取近期重要或情感强烈的事件。
-
-- `days`：天数（默认 7）
-- `min_score`：最低分数 = importance × emotional_intensity（默认 20）
-- 示例：`/APLR_recall recent 30 15`
-
-#### `APLR_recall node [name]`
-
-搜索特定记忆节点。
-
-- 示例：`/APLR_recall node 王小美`
-
-#### `APLR_recall theme [theme_id]`
-
-查看已固化的主题记忆详情或列表。
-
-- 不传参数则列出所有主题
-- 示例：`/APLR_recall theme theme_003`
-
-### APLR_maintenance 指令组
-
-#### `APLR_maintenance vectorize [YYYY-MM-DD/all]`
-
-将指定日期或全部事件重新向量化。
-
-- 示例：`/APLR_maintenance vectorize all`
-
-#### `APLR_maintenance update_nodes [YYYY-MM-DD]`
-
-从指定日期的已有事件中重新提取记忆节点。
-
-- 示例：`/APLR_maintenance update_nodes 2026-06-27`
-
-#### `APLR_maintenance write_node [name] [type] [description]`
-
-手动写入或更新记忆节点。
-
-- 示例：`/APLR_maintenance write_node 王小美 人物 我的好友，性格豪爽`
-
-#### `APLR_maintenance backfill_node_relations`
-
-全量回填节点关联事件。
-
-- 遍历所有事件和节点，通过名称/别名匹配建立关联，将匹配的事件 ID 追加到节点的 `related_event_ids`
-- 示例：`/APLR_maintenance backfill_node_relations`
-
-#### `APLR_maintenance extract_history [YYYY-MM-DD]`
-
-从 AstrBot 核心数据库提取指定日期的聊天记录文件。
-
-- 通常不需要手动执行，每日总结会自动提取
-- 示例：`/APLR_maintenance extract_history 2026-06-27`
-
-#### `APLR_maintenance load_model`
-
-手动下载并提前加载向量模型，避免后续自动触发导致首次聊天卡顿。
-
-#### `APLR_maintenance delete_daily_summary [YYYY-MM-DD]`
-
-删除指定日期的所有事件、日总结、向量及其连接，并清理当日聊天日志文件。
-
-- 示例：`/APLR_maintenance delete_daily_summary 2026-06-27`
+| 指令 | 参数 | 说明 |
+| :--- | :--- | :--- |
+| `/daily_summary_command` | `[YYYY-MM-DD]`（可选） | 手动触发指定日期的每日总结。不传则总结今天 |
+| `/memory_consolidation` | | 全局记忆主题归类（大固化）。建议事件数 ≥ 200 时执行，每隔数月到数年一次 |
+| **APLR_recall** | | **记忆检索指令组** |
+| └ `memory` | `[text] [count]` | 根据文本搜索相关记忆。count 可选，默认 5 |
+| └ `deep` | `[目标] [模式]` | 深度回想。目标支持：事件ID(`evt_*`)、主题ID(`theme_*`)、日期(`YYYY-MM-DD`)。模式仅对主题ID生效：`类人`/`时间`/`情绪`/`随机`，留空用默认权重 |
+| └ `recent` | `[天数] [分数]` | 获取近期重要或情感强烈的事件。分数 = importance × emotional_intensity，默认 20 |
+| └ `node` | `[name]` | 搜索特定记忆节点 |
+| └ `theme` | `[主题ID]` | 查看已固化的主题记忆详情。不传参数列出所有主题 |
+| **APLR_maintenance** | | **维护指令组** |
+| └ `vectorize` | `[YYYY-MM-DD/all]` | 将指定日期或全部事件重新向量化 |
+| └ `update_nodes` | `[YYYY-MM-DD]` | 从已有事件中重新提取记忆节点 |
+| └ `write_node` | `[名] [类] [述]` | 手动写入或更新记忆节点 |
+| └ `backfill_node_relations` | | 全量回填节点关联事件（通过名称/别名匹配建立关联） |
+| └ `extract_history` | `[YYYY-MM-DD]` | 从数据库提取指定日期的聊天记录（通常不需要手动执行） |
+| └ `load_model` | | 提前下载并加载向量模型，避免首次聊天卡顿 |
+| └ `delete_daily_summary` | `[YYYY-MM-DD]` | 删除指定日期的事件、总结、向量及连接，并清理聊天日志 |
 
 ---
 
