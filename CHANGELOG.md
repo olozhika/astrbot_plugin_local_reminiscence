@@ -1,20 +1,40 @@
-### 🔄 大更新说明 / Update Log (v1.4.0)
+### 🔄 更新说明 / Update Log (v1.4.0)
 
-**v1.4.0 是本地回忆[APLR]的大版本更新，带来了「记忆节点网络升级」与「智能聚类提醒」两大能力。**
+#### 更新
 
 1. **记忆节点新增别名与关联事件**
     - `MemoryNode` 新增 `aliases` 和 `related_event_ids` 字段
     - 每日总结节点提取时，LLM 会在已有别名基础上追加新别名（展示在已知节点背景中）
     - 保存总结时自动做名称/别名与事件叙述的全文匹配，将匹配的事件 ID 追加到节点关联
-    - `search_nodes` 搜索时别名与正名有同等匹配地位
-    - 新增维护指令 `/APLR_maintenance backfill_node_relations`，一键全量回填所有节点关联
+    - 新增维护指令 `/APLR_maintenance backfill_node_relations`，一键全量回填所有节点关联（一般不需要使用，因为每日总结时会自动关联，此过程不调用LLM）
     - `update_nodes` 写入时采用追加合并策略，不会丢失已有的别名和关联
+    - 新增「联想能力」配置组（`association`），主要支持以下功能：
+        - **一级关联事件唤起**：聊天中注入节点时，可配置概率额外抽取该节点的关联事件一并注入（比如想起'小美'的时候也想起'小美某某日说考试好难'）
+        - **二级节点唤起**：可配置概率唤起与当前节点有共享事件的二级关联节点及其关联事件，增强 AI 联想能力（比如想起'小美'的时候也想起小美的好朋友'小帅'）
+    - 节点更新时仅在 description 或 type 有实质变化时才刷新 `last_updated`，避免 LLM 原样抄写导致时间戳虚高
+    - 群聊上下文感知节点消歧：对话中唤起节点注入时，通过'节点-事件关联'的共享事件图结构找到与指定节点直接相连的节点：比如你在A群有个朋友叫小美，B群也有个朋友叫小美，现在在A群里你的AI会优先想起A群的这个小美
 
 2. **智能提醒记忆聚类**
     - 每日总结后自动检查：事件数达 300 且未聚类，或聚类后事件数翻倍，则提醒用户执行 `/memory_consolidation`
     - 对于用户指令或 Cron job 触发的提醒直接发送到当前会话
     - 对于自动定时总结可配置 `day_boundary_config.admin_session` 投递通知，留空则仅后台日志提醒
+    - 修复：旧版本执行大固化时 `last_consolidation_event_count` 未写入导致聚类提醒永远不触发的问题，启动时自动检测并补全
 
+#### 优化
+
+8. **LLM 提示词缓存优化**
+    - 记忆注入从 `system_prompt` 迁移到 `extra_user_content_parts`，进一步降低Token支出（需最新版AstrBot）
+    - 向后兼容：旧版 AstrBot 自动回退到 `system_prompt` 注入（行为不变）
+
+9. **聊天记录实时记录优化**
+    - 增加低版本兼容：当 AstrBot 版本 < v4.23.2（无 `on_agent_done` 钩子）时，Cron Job 的完整交互记录会在下次 Cron Job 触发时自动写入官方聊天记录
+    - 注意：现在依然建议【不优先】开启实时记录功能，本功能的更多优化将在下版本完成
+
+12. **每日总结线路优化**
+    - 在每日总结遇到问题时自动触发重试，重试覆盖下列异常类型：空响应（`EmptyModelOutputError`）、JSON 解析失败（`json.JSONDecodeError`）、API 错误（如Token Plan访问频次限制）等
+    - 总结完成时若存在失败批次，向用户提示"第 X 批次总结失败，内容可能不完整"，自动定时总结的失败警告与结果推送到 `day_boundary_config.admin_session`，用户触发或 Cron 挂对话的总结回复到原会话
+    - 每日总结聊天记录读取方式优化兜底，避免部分设备'data_v4.db文件锁导致聊天记录导出失败'的问题
+    
 3. **已知节点覆写保护**
     - 每日总结的节点提取环节中，若 LLM 提交了"已知记忆节点背景"中未提供的已有节点，`description` 改为追加而非覆写，`type` 改为去重后追加（支持 `;` `,` `，` `/` 分隔）
     - 删除了 `memory_node` 默认提示词中关于 `recall_node_tool` 的误导性描述（LLM 在该环节无工具调用能力）
@@ -23,58 +43,17 @@
     - `vector_db.py`、`summarizer.py`、`memory_consolidation.py` 中的 `from astrbot.api import logger` 替换为标准库 `logging.getLogger(__name__)`
     - 所有 AstrBot 相关包调用现在仅出现在 `main.py` 中，其余模块可直接移植到其他 Agent 框架
 
-5. **记忆回忆重复加固修复**
+5. **记忆回忆重复加固修复**（虽然这一项还并没有启用...）
     - 修复了 `recall_memory_tool` 和 `_get_memory_retrieval_text` 各自独立执行 `reinforce_memory` 导致单次回忆双重加固的 bug
     - 加固逻辑统一收归 `_get_memory_retrieval_text`，由 `reinforcement_intensity` 配置统一控制
+    
+#### 老用户升级
 
-6. **群聊上下文感知节点消歧**
-    - 新增 `get_first_level_connected_nodes()` 方法，通过共享事件图结构找到与指定节点直接相连的节点
-    - 群聊场景：以群聊节点 + 发言者节点为双源，取并集后查找一级连接节点，再按消息关键词过滤
-    - 私聊场景：以发言者节点为单源，同样查找一级连接节点并按关键词过滤
-    - 排他性回退：若一级连接匹配命中则使用（避免跨群同名污染），否则回退到全节点搜索
+可以考虑手动调整插件设置“联想能力”。
 
-7. **`deep_recall_tool` 支持节点名称查询**
-    - 输入节点名称（精确匹配）可查看该节点的关联事件列表
-    - 采用概率加权随机抽取（复用主题回想的权重逻辑）：时间衰减 × 重要性 × 情感强度
-    - 默认抽取 5 条，事件不足 5 条时全部返回
-    - 展示格式：仅显示日期和叙述，按日期倒序排列
-    - 支持按正名和别名精确匹配
+#### 致谢
 
-8. **LLM 提示词缓存优化**
-    - 记忆注入从 `system_prompt` 迁移到 `extra_user_content_parts`（需 AstrBot ≥ v4.27.5）
-    - 利用 `TextPart.mark_as_temp()` 机制：记忆内容发送给 LLM 但不持久化到会话历史
-    - 效果：system_prompt 保持稳定，跨会话前缀缓存命中率提升
-    - 向后兼容：旧版 AstrBot 自动回退到 `system_prompt` 注入（行为不变）
-
-9. **`on_agent_done` 向后兼容回退机制**
-    - 当 AstrBot 版本 < v4.23.2（无 `on_agent_done` 钩子）时，Cron Job 的完整交互记录会在下次 Cron Job 触发时自动写入官方聊天记录
-    - 采用"延迟冲洗"策略：新 Cron Job 开始时检查并写入上一个 Cron Job 积累的记录
-    - 新增 `_active_cron_umos` 映射，在记录追加时同步存储 `unified_msg_origin`，确保回退写入能正确找到目标会话
-    - 完全向后兼容：≥ v4.23.2 版本仍通过 `on_agent_done` 钩子即时写入，行为不变
-
-10. **正常对话节点注入仅展示对话中实际用到的别名**
-    - 记忆节点背景注入时，不再向 LLM 展示节点的全部别名
-    - 仅在当前消息中确实出现某个别名时，才以 `别名: XX` 标注该别名（正名始终展示）
-    - 目的：防止 LLM 因看到未在对话中使用的别名而产生混淆（如把"明明"当作另一实体）
-
-11. **聚类主题与实体节点的自动关联**
-    - `MemoryNode` 新增 `related_theme_ids` 字段，用于记录与此节点相关的聚类主题
-    - 新增 `backfill_theme_node_relations()`：遍历聚类主题总结文本，通过名称/别名子串匹配建立节点-主题关联
-    - `/APLR_maintenance backfill_node_relations` 现在同时回填事件关联与主题关联，一条指令完成全部关联
-    - `big_consolidation` 执行前自动清除旧的节点-主题关联，执行后自动回填新关联
-    - `incremental_consolidation` 执行后自动回填节点-主题关联
-    - 节点-事件关联与节点-主题关联统一采用简单的子串包含匹配（名称/别名出现在文本中即命中）
-
-12. **每日总结线路优化**
-    - 修复 `/daily_summary_command` 被 LLM 拦截的问题：命令 handler 现在通过 `event.stop_event()` 兜底，确保事件不会继续流向 LLM
-    - `_daily_summary_logic` 中所有无输出 return 分支已补充 `yield event.plain_result(...)` 提示，避免静默失败导致事件传播到 LLM
-    - `llm_generate_func` 新增重试机制（最多3次，指数退避）与 fallback provider 自动切换，依赖 AstrBot 的 `fallback_chat_models` 配置
-    - 分段总结新增逐批次重试（每批次最多重试2次），失败批次记录到 `failed_chunks` 列表
-    - 节点提取阶段（`extract_nodes_from_events`）新增重试（最多3次，指数退避），应对 LLM 返回空响应、非法 JSON、访问频率过高等问题
-    - 重试覆盖所有异常类型：空响应（`EmptyModelOutputError`）、JSON 解析失败（`json.JSONDecodeError`）、API 错误等
-    - 总结完成时若存在失败批次，向用户提示"第 X 批次总结失败，内容可能不完整"
-    - 新增 `_daily_summary_locks` 逐日期并发锁：同一日期同时只允许一个总结任务运行，避免自动总结与手动触发/工具调用并发冲突
-    - 自动定时总结的失败警告与结果推送到 `day_boundary_config.admin_session`，用户触发或 Cron 挂对话的总结回复到原会话
+感谢@Ortfine 的各项优化   PR #39
 
 ### 🔄 小更新说明 (v1.3.5)
 

@@ -256,6 +256,24 @@ class LocalReminiscencePlugin(Star):
         except Exception as _e:
             logger.warning(f"[APLR] 启动时自动回填失败: {_e}")
 
+        # 兼容旧版本：如果 last_threshold 已存在但 last_consolidation_event_count 缺失，
+        # 自动用当前事件数补上，使聚类提醒翻倍检测恢复正常。
+        try:
+            if (
+                self.db.get_consolidation_config("last_threshold") is not None
+                and self.db.get_consolidation_config("last_consolidation_event_count")
+                is None
+            ):
+                count = self.db.get_event_count()
+                self.db.set_consolidation_config(
+                    "last_consolidation_event_count", str(count)
+                )
+                logger.info(
+                    f"[APLR] 旧版本兼容：补充 last_consolidation_event_count = {count}"
+                )
+        except Exception as _e:
+            logger.warning(f"[APLR] 补充 consolidation 配置失败: {_e}")
+
         try:
             from astrbot.core.star.star_handler import star_handlers_registry
             from astrbot.core.star.star import star_map
@@ -1283,6 +1301,121 @@ class LocalReminiscencePlugin(Star):
                 logger.info(
                     f"[APLR] 自动注入了 {len(all_nodes)} 个记忆节点: {', '.join([n['name'] for n in all_nodes])}"
                 )
+
+                # === 联想唤起：一级关联事件 + 二级节点 ===
+                assoc_cfg = self.config.get("association", {})
+                fl_prob = assoc_cfg.get("first_level_event_recall_prob", 0.0)
+                fl_count = assoc_cfg.get("first_level_event_count", 2)
+                sl_prob = assoc_cfg.get("second_level_recall_prob", 0.0)
+                sl_max_nodes = assoc_cfg.get("second_level_max_nodes", 1)
+                sl_max_events = assoc_cfg.get("second_level_max_events", 2)
+
+                # Stage A: 一级关联事件唤起
+                if fl_prob > 0 and random.random() <= fl_prob:
+                    fl_events_parts = []
+                    for n in all_nodes:
+                        if not n.get("is_user") and not n.get("is_group"):
+                            continue
+                        related_ids = json.loads(n.get("related_event_ids") or "[]")
+                        if not related_ids:
+                            continue
+                        events = self.db.get_events_by_ids(related_ids)
+                        if not events:
+                            continue
+                        sampled = self._weighted_sample_events(events, fl_count)
+                        if sampled:
+                            sampled.sort(key=lambda x: x["date"], reverse=True)
+                            ev_lines = "\n".join(
+                                f"  - [{ev['date']}] {ev['narrative']}"
+                                for ev in sampled
+                            )
+                            fl_events_parts.append(
+                                f"🔗 [{n['name']}] 的关联事件：\n{ev_lines}"
+                            )
+                    if fl_events_parts:
+                        fl_text = (
+                            "\n\n【联想到这些记忆 - 以下信息来自与当前提及实体的关联】\n"
+                            + "\n\n".join(fl_events_parts)
+                            + "\n"
+                        )
+                        self._inject_memory_to_req(req, fl_text)
+                        logger.info(
+                            f"[APLR] 一级关联事件唤起: 注入了 {len(fl_events_parts)} 个节点的关联事件"
+                        )
+
+                # Stage B: 二级节点唤起
+                if sl_prob > 0 and random.random() <= sl_prob:
+                    sl_nodes_seen = {n["name"] for n in all_nodes}
+                    sl_candidates = []
+                    for n in all_nodes:
+                        if not n.get("is_user") and not n.get("is_group"):
+                            continue
+                        for fl_node in self.db.get_first_level_connected_nodes(
+                            n["name"]
+                        ):
+                            if fl_node["name"] not in sl_nodes_seen:
+                                sl_candidates.append((n["name"], fl_node))
+                                sl_nodes_seen.add(fl_node["name"])
+
+                    if sl_candidates:
+                        sampled_pairs = random.sample(
+                            sl_candidates,
+                            min(len(sl_candidates), sl_max_nodes),
+                        )
+                        sl_parts = []
+                        for src_name, sl_node in sampled_pairs:
+                            sl_node_name = sl_node["name"]
+                            # 找两个节点的共享事件
+                            src_nodes = self.db.get_nodes_by_names([src_name])
+                            src_node = src_nodes[0] if src_nodes else None
+                            if not src_node:
+                                continue
+                            src_ids = set(
+                                json.loads(src_node.get("related_event_ids") or "[]")
+                            )
+                            sl_ids = set(
+                                json.loads(sl_node.get("related_event_ids") or "[]")
+                            )
+                            shared_ids = src_ids & sl_ids
+                            shared_events_text = ""
+                            if shared_ids:
+                                shared_events = self.db.get_events_by_ids(
+                                    list(shared_ids)
+                                )
+                                if shared_events:
+                                    sampled_shared = self._weighted_sample_events(
+                                        shared_events, sl_max_events
+                                    )
+                                    sampled_shared.sort(
+                                        key=lambda x: x["date"], reverse=True
+                                    )
+                                    ev_lines = "\n".join(
+                                        f"  - [{ev['date']}] {ev['narrative']}"
+                                        for ev in sampled_shared
+                                    )
+                                    shared_events_text = f"\n  关联事件：\n{ev_lines}"
+
+                            last_updated_date = (
+                                sl_node["last_updated"].split(" ")[0]
+                                if sl_node["last_updated"]
+                                else "未知"
+                            )
+                            sl_parts.append(
+                                f"🔗 [{sl_node_name}] ({sl_node['type']}): "
+                                f"{sl_node['description']} "
+                                f"(最后更新: {last_updated_date})"
+                                f"{shared_events_text}"
+                            )
+                        if sl_parts:
+                            sl_text = (
+                                "\n\n【联想到这些记忆 - 以下信息来自与当前提及实体的间接关联】\n"
+                                + "\n\n".join(sl_parts)
+                                + "\n"
+                            )
+                            self._inject_memory_to_req(req, sl_text)
+                            logger.info(
+                                f"[APLR] 二级节点唤起: 注入了 {len(sl_parts)} 个二级节点"
+                            )
 
             # 0. 自动触发记忆检索 (语义匹配) - 放在新会话注入后面，且非新会话也会触发
             keywords = ["之前", "记得", "回忆", "想起", "以前", "过去", "曾经"]
@@ -2319,16 +2452,15 @@ class LocalReminiscencePlugin(Star):
     async def deep_recall_tool(
         self, event: AstrMessageEvent, target: str, mode: str = ""
     ) -> str:
-        """深度回想工具。当你已经获得一个特定的线索（ID、日期或节点名）并希望挖掘更多细节时使用。
+        """深度回想工具。当你已经获得一个特定的线索（ID、日期或主题）并希望挖掘更多细节时使用。
 
         支持以下输入格式：
         1. 事件ID (以 evt_ 开头)：回想特定往事的深度感想和细节。
         2. 主题ID (以 theme_ 开头)：从宏观主题中联想出 3 个具体的代表性记忆片段。
         3. 日期 (YYYY-MM-DD 格式)：回想那一天的整体心境和感悟。
-        4. 节点名称（精确匹配）：查看某个记忆节点的关联事件列表。
 
         Args:
-            target(string): 要深度回想的目标（ID、日期或节点名称）。
+            target(string): 要深度回想的目标（ID 或日期）。
             mode(string): 联想模式（仅对主题有效）。可选：'类人'(均衡)、'时间'(侧重近期)、'情绪'(侧重强烈情感)、'随机'(完全随机)。留空则使用系统默认权重。
         """
         if not target:
@@ -2348,9 +2480,8 @@ class LocalReminiscencePlugin(Star):
         elif re.match(r"^\d{4}-\d{2}-\d{2}$", target):
             return await self._get_daily_reflection_logic(target)
 
-        # 4. 处理节点名称（精确匹配）
         else:
-            return await self._get_node_events_logic(target)
+            return "无法识别目标格式。请提供事件ID(evt_开头)、主题ID(theme_开头)或日期(YYYY-MM-DD)。"
 
     async def _get_theme_recall_logic(self, theme_id: str, mode: str = "") -> str:
         """从主题中进行概率不均等的随机抽取事件"""
@@ -2510,46 +2641,9 @@ class LocalReminiscencePlugin(Star):
         if not events:
             return f"节点 '{node_name}' 的关联事件记录已丢失。"
 
-        # 概率加权随机抽取（复用主题回想的权重逻辑）
-        num_to_sample = min(len(events), 5)
-        if num_to_sample < len(events):
-            now = datetime.now().date()
-            weights = []
-            for ev in events:
-                try:
-                    ev_date = datetime.strptime(ev["date"], "%Y-%m-%d").date()
-                    days_diff = (now - ev_date).days
-                    date_weight = 1.0 / (1 + math.log1p(days_diff / 30.0))
-                except Exception:
-                    date_weight = 0.1
-
-                importance = ev.get("importance", 5)
-                intensity = ev.get("emotional_intensity", 5)
-
-                w_time = self.config.get("weight_time", 1.0)
-                w_importance = self.config.get("weight_importance", 1.0)
-                w_intensity = self.config.get("weight_emotional_intensity", 1.0)
-
-                score = (
-                    (importance**w_importance)
-                    * (intensity**w_intensity)
-                    * (date_weight**w_time)
-                )
-                weights.append(max(0.001, score))
-
-            selected = []
-            available = list(range(len(events)))
-            available_weights = list(weights)
-            for _ in range(num_to_sample):
-                if not available:
-                    break
-                idx = random.choices(
-                    range(len(available)), weights=available_weights, k=1
-                )[0]
-                selected.append(events[available.pop(idx)])
-                available_weights.pop(idx)
-        else:
-            selected = events
+        # 概率加权随机抽取
+        num_events = self.config.get("association.recall_node_tool_events", 3)
+        selected = self._weighted_sample_events(events, num_events)
 
         # 按日期排序，只显示日期和叙述
         selected.sort(key=lambda x: x["date"], reverse=True)
@@ -2692,19 +2786,118 @@ class LocalReminiscencePlugin(Star):
     async def recall_node_tool(self, event: AstrMessageEvent, name: str) -> str:
         """搜索某个特定的记忆节点（如人物、地点、核心概念）。当你需要了解某个特定对象或概念的背景信息时使用。每次只能查询一个关键词（即1个节点）。
 
+        若名称精确匹配到唯一节点，将同时返回该节点的关联事件（数量由插件配置"联想能力 - 节点回想工具-抽取事件数"控制，按重要性加权抽取）。
+        若名称匹配到多个节点或无精确匹配，则仅返回节点描述供你进一步选择。
+
         Args:
             name(string): 要搜索的节点名称。
         """
-        nodes = self.db.search_nodes(name, limit=2)
-        if nodes:
-            res = f"找到以下关于 {name} 的相关 node 信息：\n"
-            for node in nodes:
+        name = name.strip()
+        if not name:
+            return "错误：需要提供节点名称。"
+
+        # 查找精确匹配（名称或别名完全一致）
+        candidates = self.db.search_nodes(name, limit=10)
+        exact_matches = []
+        matched_alias = {}  # node_name -> which alias matched
+        name_lower = name.lower()
+
+        for c in candidates:
+            if c["name"].lower() == name_lower:
+                exact_matches.append(c)
+                matched_alias[c["name"]] = c["name"]
+            else:
+                aliases = json.loads(c.get("aliases") or "[]")
+                for a in aliases:
+                    if a.lower() == name_lower:
+                        exact_matches.append(c)
+                        matched_alias[c["name"]] = a
+                        break
+
+        # 情况1：唯一精确匹配 → 返回描述 + 关联事件
+        if len(exact_matches) == 1:
+            node = exact_matches[0]
+            alias_display = matched_alias.get(node["name"], "")
+            alias_note = (
+                f"（通过别名「{alias_display}」匹配）"
+                if alias_display != node["name"]
+                else ""
+            )
+            last_updated = (
+                node["last_updated"].split(" ")[0] if node["last_updated"] else "未知"
+            )
+            res = f"📌 {node['name']}{alias_note} ({node['type']}): {node['description']} (最后更新: {last_updated})\n"
+
+            # 查关联事件
+            related_ids = json.loads(node.get("related_event_ids") or "[]")
+            if not related_ids:
+                res += "（暂无关联事件）"
+                return res
+
+            events = self.db.get_events_by_ids(related_ids)
+            if not events:
+                res += "（关联事件记录已丢失）"
+                return res
+
+            num_to_sample = min(len(events), 5)
+            if num_to_sample < len(events):
+                now = datetime.now().date()
+                weights = []
+                for ev in events:
+                    try:
+                        ev_date = datetime.strptime(ev["date"], "%Y-%m-%d").date()
+                        days_diff = (now - ev_date).days
+                        date_weight = 1.0 / (1 + math.log1p(days_diff / 30.0))
+                    except Exception:
+                        date_weight = 0.1
+                    importance = ev.get("importance", 5)
+                    intensity = ev.get("emotional_intensity", 5)
+                    w_time = self.config.get("weight_time", 1.0)
+                    w_importance = self.config.get("weight_importance", 1.0)
+                    w_intensity = self.config.get("weight_emotional_intensity", 1.0)
+                    score = (
+                        (importance**w_importance)
+                        * (intensity**w_intensity)
+                        * (date_weight**w_time)
+                    )
+                    weights.append(max(0.001, score))
+
+                selected = []
+                available = list(range(len(events)))
+                available_weights = list(weights)
+                for _ in range(num_to_sample):
+                    if not available:
+                        break
+                    idx = random.choices(
+                        range(len(available)), weights=available_weights, k=1
+                    )[0]
+                    selected.append(events[available.pop(idx)])
+                    available_weights.pop(idx)
+            else:
+                selected = events
+
+            selected.sort(key=lambda x: x["date"], reverse=True)
+            res += f"\n关联事件（共 {len(events)} 条，展示 {len(selected)} 条）：\n"
+            for ev in selected:
+                res += f"- [{ev['date']}] {ev['narrative']}\n"
+            return res
+
+        # 情况2：无精确匹配或多于一个精确匹配 → 仅返回节点描述
+        if candidates:
+            res = f"找到以下关于 {name} 的相关节点信息：\n"
+            for node in candidates:
                 last_updated_date = (
                     node["last_updated"].split(" ")[0]
                     if node["last_updated"]
                     else "未知"
                 )
-                res += f"- {node['name']} ({node['type']}): {node['description']} (最后更新于 {last_updated_date})\n"
+                # 标注匹配方式
+                alias_display = matched_alias.get(node["name"])
+                if alias_display and alias_display != node["name"]:
+                    alias_note = f"（通过别名「{alias_display}」匹配）"
+                else:
+                    alias_note = ""
+                res += f"- {node['name']}{alias_note} ({node['type']}): {node['description']} (最后更新于 {last_updated_date})\n"
             return res
         return f"未找到关于 {name} 的节点信息。"
 
@@ -3059,6 +3252,55 @@ class LocalReminiscencePlugin(Star):
                     break
 
         return min(coherence, 1.0)
+
+    def _weighted_sample_events(self, events: list, n: int) -> list:
+        """概率加权随机抽取 n 条事件。
+
+        复用 weight_time / weight_importance / weight_emotional_intensity 权重配置，
+        被 recall_node 工具和联想唤起共用。
+        """
+        n = min(len(events), n)
+        if n <= 0:
+            return []
+        if n >= len(events):
+            return events
+
+        now = datetime.now().date()
+        w_time = self.config.get("weight_time", 1.0)
+        w_importance = self.config.get("weight_importance", 1.0)
+        w_intensity = self.config.get("weight_emotional_intensity", 1.0)
+
+        weights = []
+        for ev in events:
+            try:
+                ev_date = datetime.strptime(ev["date"], "%Y-%m-%d").date()
+                days_diff = (now - ev_date).days
+                date_weight = 1.0 / (1 + math.log1p(days_diff / 30.0))
+            except Exception:
+                date_weight = 0.1
+
+            importance = ev.get("importance", 5)
+            intensity = ev.get("emotional_intensity", 5)
+            score = (
+                (importance**w_importance)
+                * (intensity**w_intensity)
+                * (date_weight**w_time)
+            )
+            weights.append(max(0.001, score))
+
+        selected = []
+        available = list(range(len(events)))
+        available_weights = list(weights)
+        for _ in range(n):
+            if not available:
+                break
+            idx = random.choices(range(len(available)), weights=available_weights, k=1)[
+                0
+            ]
+            selected.append(events[available.pop(idx)])
+            available_weights.pop(idx)
+
+        return selected
 
     def _cluster_events_by_context(self, events: List[dict]) -> List[List[dict]]:
         """将相关事件聚类成"记忆片段"，而非离散事件"""
@@ -3654,7 +3896,7 @@ class LocalReminiscencePlugin(Star):
                         if failed_chunks:
                             warn_msg += f"，且第 {', '.join(map(str, failed_chunks))} 批次总结失败"
                         warn_msg += "。请确认当天有足够对话内容。"
-                        chain = MessageChain().message(warn_msg).build()
+                        chain = MessageChain().message(warn_msg)
                         await self.context.send_message(admin_session, chain)
                     except Exception as ne:
                         logger.warning(
@@ -3741,7 +3983,8 @@ class LocalReminiscencePlugin(Star):
             except Exception as ve:
                 logger.error(f"[APLR] 自动向量化失败: {ve}")
 
-            # 构建回复
+            # 构建回复 & 解析投递目标
+            reminder_target = ""
             if event:
                 # 用户触发或 cron 挂对话 → 回复到该对话
                 yield event.plain_result(f"✨ {date_str} 的回忆整理好啦！\n\n")
@@ -3756,12 +3999,12 @@ class LocalReminiscencePlugin(Star):
                 logger.info(f"[APLR] 我的感悟：{summary.daily_reflection}")
                 logger.info(f"[APLR] 我记下了 {len(summary.events)} 个印象深刻的瞬间。")
 
-                admin_session = (
+                reminder_target = (
                     self.config.get("day_boundary_config", {})
                     .get("admin_session", "")
                     .strip()
                 )
-                if admin_session:
+                if reminder_target:
                     try:
                         from astrbot.core.message.message_event_result import (
                             MessageChain,
@@ -3770,8 +4013,8 @@ class LocalReminiscencePlugin(Star):
                         msg = f"✨ {date_str} 的回忆自动整理好啦！\n💭 感悟：{summary.daily_reflection}\n📍 记下了 {len(summary.events)} 个印象深刻的瞬间。"
                         if failed_chunks:
                             msg += f"\n\n⚠️ 注意：第 {', '.join(map(str, failed_chunks))} 批次总结失败，总结内容可能不完整。"
-                        chain = MessageChain().message(msg).build()
-                        await self.context.send_message(admin_session, chain)
+                        chain = MessageChain().message(msg)
+                        await self.context.send_message(reminder_target, chain)
                     except Exception as ne:
                         logger.warning(
                             f"[APLR] 向 admin_session 投递自动总结结果失败: {ne}"
@@ -3804,21 +4047,15 @@ class LocalReminiscencePlugin(Star):
                     )
                     if event is not None:
                         yield event.plain_result(reminder_msg)
-                    else:
-                        admin_session = (
-                            self.config.get("day_boundary_config", {})
-                            .get("admin_session", "")
-                            .strip()
+                    elif reminder_target:
+                        from astrbot.core.message.message_event_result import (
+                            MessageChain,
                         )
-                        if admin_session:
-                            from astrbot.core.message.message_event_result import (
-                                MessageChain,
-                            )
 
-                            chain = MessageChain().message(reminder_msg).build()
-                            await self.context.send_message(admin_session, chain)
-                        else:
-                            logger.info(f"[APLR] {reminder_msg}")
+                        chain = MessageChain().message(reminder_msg)
+                        await self.context.send_message(reminder_target, chain)
+                    else:
+                        logger.info(f"[APLR] {reminder_msg}")
             except Exception as ce:
                 logger.error(f"[APLR] 检查记忆聚类条件时出错: {ce}")
         except Exception as e:

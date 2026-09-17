@@ -169,6 +169,12 @@ class MemoryDB:
                     new_themes = set(node.related_theme_ids or [])
                     merged_themes = list(existing_themes | new_themes)
 
+                    # 仅当 description 或 type 有实质变化时才刷新 last_updated，
+                    # 避免 LLM 原样抄写节点时产生无意义的时间戳更新。
+                    has_substantive_change = (existing["description"] or "") != (
+                        node.description or ""
+                    ) or (existing["type"] or "") != (node.type or "")
+
                     cursor.execute(
                         """
                         UPDATE nodes SET
@@ -177,7 +183,7 @@ class MemoryDB:
                             aliases = ?,
                             related_event_ids = ?,
                             related_theme_ids = ?,
-                            last_updated = CURRENT_TIMESTAMP
+                            last_updated = CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE last_updated END
                         WHERE name = ?
                     """,
                         (
@@ -186,6 +192,7 @@ class MemoryDB:
                             json.dumps(merged_aliases, ensure_ascii=False),
                             json.dumps(merged_events, ensure_ascii=False),
                             json.dumps(merged_themes, ensure_ascii=False),
+                            has_substantive_change,
                             node.name,
                         ),
                     )
@@ -279,6 +286,10 @@ class MemoryDB:
                             merged_type = node.type
                             merged_description = node.description
 
+                        has_substantive_change = (existing["description"] or "") != (
+                            merged_description or ""
+                        ) or (existing["type"] or "") != (merged_type or "")
+
                         cursor.execute(
                             """
                             UPDATE nodes SET
@@ -287,7 +298,7 @@ class MemoryDB:
                                 aliases = ?,
                                 related_event_ids = ?,
                                 related_theme_ids = ?,
-                                last_updated = CURRENT_TIMESTAMP
+                                last_updated = CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE last_updated END
                             WHERE name = ?
                         """,
                             (
@@ -296,6 +307,7 @@ class MemoryDB:
                                 json.dumps(merged_aliases, ensure_ascii=False),
                                 json.dumps(merged_events, ensure_ascii=False),
                                 json.dumps(merged_themes, ensure_ascii=False),
+                                has_substantive_change,
                                 node.name,
                             ),
                         )
@@ -396,14 +408,23 @@ class MemoryDB:
                     if matches:
                         ev_matches[event.event_id] = matches
 
-                # 只把事件分配给达到最长匹配的节点
+                # 消歧：仅排除名称为另一匹配名称子串的短节点
                 node_event_map: dict[str, set[str]] = {
                     n.name: set(n.related_event_ids or []) for n in summary.nodes
                 }
                 for ev_id, matches in ev_matches.items():
-                    max_len = max(matches.values())
-                    for node_name, match_len in matches.items():
-                        if match_len == max_len:
+                    matched_names = list(matches.keys())
+                    excluded = set()
+                    for i, name_a in enumerate(matched_names):
+                        for j, name_b in enumerate(matched_names):
+                            if (
+                                i != j
+                                and name_a in name_b
+                                and len(name_a) < len(name_b)
+                            ):
+                                excluded.add(name_a)
+                    for node_name in matched_names:
+                        if node_name not in excluded:
                             node_event_map[node_name].add(ev_id)
 
                 for node in summary.nodes:
@@ -945,8 +966,9 @@ class MemoryDB:
         """全量回填：遍历所有事件和节点，通过名称/别名匹配建立 related_event_ids 关联。
         同时回填主题节点关联。返回更新的节点数。
 
-        消歧策略：当多个节点名称（或别名）同时匹配同一个事件时，只保留名称最长的节点，
-        避免短名称（如"协会"）误匹配到本应属于长名称（如"XX协会"）的事件。
+        消歧策略：当多个节点名称（或别名）同时匹配同一个事件时，仅排除名称为另一
+        匹配名称子串的短节点（如"协会"是"NJU科幻协会"的子串时排除"协会"），
+        互相不是子串的节点（如"鬼畜猫"和"Minescraft"）会同时保留。
 
         AI 节点特殊处理：由于事件以第一人称记录（"我如何如何"），AI 名字不会出现在
         事件叙述中。对于 AI 名字对应的节点，仅关联 reflection 非空的事件（即有深度
@@ -1001,15 +1023,22 @@ class MemoryDB:
                 if matches:
                     event_match_map[ev_id] = matches
 
-            # 第二轮：对每个事件，找出最长匹配长度，只把事件分配给达到该长度的节点
+            # 第二轮：消歧 —— 仅排除名称为另一匹配名称子串的短节点
+            # 例："协会"是"NJU科幻协会"的子串 → 排除"协会"
+            # 例："鬼畜猫"不是"Minescraft"的子串 → 两者都保留
             # node_name -> set of event_ids
             node_events: dict[str, set[str]] = {n["name"]: set() for n in all_nodes}
             for ev_id, matches in event_match_map.items():
                 if not matches:
                     continue
-                max_len = max(matches.values())
-                for node_name, match_len in matches.items():
-                    if match_len == max_len:
+                matched_names = list(matches.keys())
+                excluded = set()
+                for i, name_a in enumerate(matched_names):
+                    for j, name_b in enumerate(matched_names):
+                        if i != j and name_a in name_b and len(name_a) < len(name_b):
+                            excluded.add(name_a)
+                for node_name in matched_names:
+                    if node_name not in excluded:
                         node_events[node_name].add(ev_id)
 
             # 第三轮：写入数据库（仅更新有变化的节点）

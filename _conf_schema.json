@@ -63,7 +63,9 @@
     "description": "目标会话 ID 列表",
     "type": "list",
     "hint": "要提取聊天记录的目标会话ID列表, 可用 sid 指令获取当前对话ID。写all则提取所有聊天记录。",
-    "default": ["Lanya_QQ:FriendMessage:947628188"]
+    "default": [
+      "Lanya_QQ:FriendMessage:947628188"
+    ]
   },
   "username": {
     "description": "用户名称",
@@ -208,6 +210,49 @@
         "type": "int",
         "hint": "当单个关键词唤起多个节点时，最终提供给 AI 的参考节点总数上限。默认 20。",
         "default": 20
+      }
+    }
+  },
+  "association": {
+    "description": "联想能力",
+    "type": "object",
+    "hint": "控制记忆的联想唤起能力——节点关联、事件抽取等。",
+    "items": {
+      "recall_node_tool_events": {
+        "description": "节点回想工具 - 抽取事件数",
+        "type": "int",
+        "hint": "recall_node 工具在精准命中节点时，抽取展示的相关事件数量上限。",
+        "default": 3
+      },
+      "first_level_event_recall_prob": {
+        "description": "相关事件唤起概率",
+        "type": "float",
+        "hint": "聊天中注入节点时，有__概率一并注入该节点的关联事件 (0-1)。",
+        "default": 0.3
+      },
+      "first_level_event_count": {
+        "description": "相关事件唤起数",
+        "type": "int",
+        "hint": "每次触发相关事件唤起时，抽取的关联事件数量上限。",
+        "default": 2
+      },
+      "second_level_recall_prob": {
+        "description": "关联节点唤起概率",
+        "type": "float",
+        "hint": "聊天中注入节点时，有__概率额外唤起与其有共享事件的其他节点 (0-1)。",
+        "default": 0.2
+      },
+      "second_level_max_nodes": {
+        "description": "关联节点唤起数",
+        "type": "int",
+        "hint": "关联节点唤起时，抽取的关联节点数量上限。",
+        "default": 1
+      },
+      "second_level_max_events": {
+        "description": "节点间共享事件唤起数",
+        "type": "int",
+        "hint": "每个关联节点注入时，抽取的共享事件数量上限。",
+        "default": 2
       }
     }
   },
