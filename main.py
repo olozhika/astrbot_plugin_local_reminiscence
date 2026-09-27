@@ -27,7 +27,7 @@ try:
 except Exception:
     pass
 from .database import MemoryDB
-from .summarizer import DailySummarizer
+from .summarizer import DailySummarizer, extract_json
 from .memory_consolidation import ThematicConsolidator
 from .chat_history_extract import clean_dialogue_with_different_limits
 import random
@@ -2305,13 +2305,7 @@ class LocalReminiscencePlugin(Star):
                 )
                 return
 
-            async def llm_generate_func(prompt, system_prompt):
-                return await self.context.llm_generate(
-                    chat_provider_id=provider_id,
-                    prompt=prompt,
-                    system_prompt=system_prompt,
-                    history=[],
-                )
+            llm_generate_func = self._make_llm_generate_func(provider_id)
 
             # 3. 获取基础提示词
             base_system_prompt = (
@@ -3350,6 +3344,102 @@ class LocalReminiscencePlugin(Star):
                         result_msg += part.text
         return f"总结任务已完成。执行结果摘要：{result_msg[:100]}..."
 
+    def _make_llm_generate_func(self, provider_id: str):
+        """创建带内容完整性校验、重试和 fallback provider 支持的 LLM 生成函数（供 DailySummarizer / ThematicConsolidator 使用）
+
+        Args:
+            provider_id: 主 provider ID
+            llm_generate_func(prompt, system_prompt, expect_json=False):
+                expect_json=True 时校验响应 JSON 可解析性，空响应/JSON 无效视为失败，
+                进入同 provider 指数退避重试，耗尽后切换 fallback provider。
+        """
+
+        def _get_finish_reason(resp) -> str | None:
+            """从 raw_completion 中防御性地提取 finish_reason（仅 OpenAI 系可用）"""
+            raw = getattr(resp, "raw_completion", None)
+            choices = getattr(raw, "choices", None)
+            if choices:
+                return getattr(choices[0], "finish_reason", None)
+            return None
+
+        async def llm_generate_func(prompt, system_prompt, expect_json: bool = False):
+            max_retries = 3
+
+            # 获取 fallback providers
+            fallback_ids = self.context._config.get("provider_settings", {}).get(
+                "fallback_chat_models", []
+            )
+            fallback_providers = []
+            for fallback_id in fallback_ids:
+                if fallback_id and fallback_id != provider_id:
+                    try:
+                        fallback_prov = (
+                            await self.context.provider_manager.get_provider_by_id(
+                                fallback_id
+                            )
+                        )
+                        if fallback_prov:
+                            fallback_providers.append(fallback_prov)
+                    except Exception:
+                        pass
+
+            # 尝试主 provider 和 fallback providers
+            providers_to_try = [provider_id] + [
+                p.provider_config.get("id", "") for p in fallback_providers
+            ]
+
+            for current_provider_id in providers_to_try:
+                for attempt in range(max_retries):
+                    try:
+                        resp = await self.context.llm_generate(
+                            chat_provider_id=current_provider_id,
+                            prompt=prompt,
+                            system_prompt=system_prompt,
+                            history=[],
+                        )
+                        text = (resp.completion_text or "").strip()
+                        if not text:
+                            raise ValueError(
+                                "LLM 返回空响应（推理 token 可能占满输出上限）"
+                            )
+                        if expect_json:
+                            try:
+                                json.loads(extract_json(text))
+                            except json.JSONDecodeError as e:
+                                raise ValueError(
+                                    f"LLM 返回内容不是有效 JSON（可能被截断）: {e}"
+                                ) from e
+                        if _get_finish_reason(resp) == "length":
+                            logger.warning(
+                                f"[APLR] LLM 输出达到 token 上限 (finish_reason=length, provider: {current_provider_id})，内容经完整性校验按可用处理"
+                            )
+                        return resp
+                    except Exception as e:
+                        if attempt < max_retries - 1:
+                            delay = 2**attempt  # 指数退避：1, 2, 4 秒
+                            logger.warning(
+                                f"[APLR] LLM 调用失败 (provider: {current_provider_id}, 尝试 {attempt + 1}/{max_retries}): {e}, {delay}秒后重试..."
+                            )
+                            await asyncio.sleep(delay)
+                        else:
+                            logger.warning(
+                                f"[APLR] LLM 调用最终失败 (provider: {current_provider_id}, 已重试 {max_retries} 次): {e}"
+                            )
+                            break  # 尝试下一个 provider
+                else:
+                    # 主 provider 成功，直接返回
+                    continue
+                # 主 provider 失败，尝试 fallback
+                if current_provider_id != provider_id:
+                    logger.info(
+                        f"[APLR] 切换到 fallback provider: {current_provider_id}"
+                    )
+
+            # 所有 providers 都失败
+            raise Exception(f"所有 LLM providers 调用失败 (主 provider: {provider_id})")
+
+        return llm_generate_func
+
     async def _search_events_for_summary(
         self, query: str, top_n: int = 5, exclude_date: str = None
     ) -> List[dict]:
@@ -3677,67 +3767,8 @@ class LocalReminiscencePlugin(Star):
                     )
                 return
 
-            # 2. 定义适配 DailySummarizer 的生成函数（带重试和 fallback 机制）
-            async def llm_generate_func(prompt, system_prompt):
-                max_retries = 3
-
-                # 获取 fallback providers
-                fallback_ids = self.context._config.get("provider_settings", {}).get(
-                    "fallback_chat_models", []
-                )
-                fallback_providers = []
-                for fallback_id in fallback_ids:
-                    if fallback_id and fallback_id != provider_id:
-                        try:
-                            fallback_prov = (
-                                await self.context.provider_manager.get_provider_by_id(
-                                    fallback_id
-                                )
-                            )
-                            if fallback_prov:
-                                fallback_providers.append(fallback_prov)
-                        except Exception:
-                            pass
-
-                # 尝试主 provider 和 fallback providers
-                providers_to_try = [provider_id] + [
-                    p.provider_config.get("id", "") for p in fallback_providers
-                ]
-
-                for current_provider_id in providers_to_try:
-                    for attempt in range(max_retries):
-                        try:
-                            return await self.context.llm_generate(
-                                chat_provider_id=current_provider_id,
-                                prompt=prompt,
-                                system_prompt=system_prompt,
-                                history=[],
-                            )
-                        except Exception as e:
-                            if attempt < max_retries - 1:
-                                delay = 2**attempt  # 指数退避：1, 2, 4 秒
-                                logger.warning(
-                                    f"[APLR] LLM 调用失败 (provider: {current_provider_id}, 尝试 {attempt + 1}/{max_retries}): {e}, {delay}秒后重试..."
-                                )
-                                await asyncio.sleep(delay)
-                            else:
-                                logger.warning(
-                                    f"[APLR] LLM 调用最终失败 (provider: {current_provider_id}, 已重试 {max_retries} 次): {e}"
-                                )
-                                break  # 尝试下一个 provider
-                    else:
-                        # 主 provider 成功，直接返回
-                        continue
-                    # 主 provider 失败，尝试 fallback
-                    if current_provider_id != provider_id:
-                        logger.info(
-                            f"[APLR] 切换到 fallback provider: {current_provider_id}"
-                        )
-
-                # 所有 providers 都失败
-                raise Exception(
-                    f"所有 LLM providers 调用失败 (主 provider: {provider_id})"
-                )
+            # 2. 适配 DailySummarizer 的生成函数（带重试和 fallback 机制）
+            llm_generate_func = self._make_llm_generate_func(provider_id)
 
             # 3. 获取基础提示词
             base_system_prompt = (
@@ -3863,6 +3894,27 @@ class LocalReminiscencePlugin(Star):
             logger.info(f"[APLR] 生成总结过程中发生错误：{e}")
             if event:
                 yield event.plain_result(f"⚠️ 生成总结时出错：{e}")
+            else:
+                # 插件自动定时总结 → 意外崩溃也推送到 admin_session
+                admin_session = (
+                    self.config.get("day_boundary_config", {})
+                    .get("admin_session", "")
+                    .strip()
+                )
+                if admin_session:
+                    try:
+                        from astrbot.core.message.message_event_result import (
+                            MessageChain,
+                        )
+
+                        chain = MessageChain().message(
+                            f"⚠️ {date_str} 自动总结执行出错：{e}"
+                        )
+                        await self.context.send_message(admin_session, chain)
+                    except Exception as ne:
+                        logger.warning(
+                            f"[APLR] 向 admin_session 投递总结错误警告失败: {ne}"
+                        )
             return
 
         if summary is None:
@@ -4083,13 +4135,7 @@ class LocalReminiscencePlugin(Star):
                 )
                 return
 
-            async def llm_generate_func(prompt, system_prompt):
-                return await self.context.llm_generate(
-                    chat_provider_id=provider_id,
-                    prompt=prompt,
-                    system_prompt=system_prompt,
-                    history=[],
-                )
+            llm_generate_func = self._make_llm_generate_func(provider_id)
 
             base_system_prompt = self.config.get("default_prompt", "")
             try:

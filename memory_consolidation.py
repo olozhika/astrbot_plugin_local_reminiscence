@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import re
@@ -15,6 +16,7 @@ from .models import ThematicMemory
 from .vector_db import VectorDB
 
 logger = logging.getLogger(__name__)
+
 
 class ThematicConsolidator:
     def __init__(
@@ -347,7 +349,9 @@ class ThematicConsolidator:
         # 4. 回填节点-主题关联
         theme_updated = self.db.backfill_theme_node_relations()
         if theme_updated:
-            logger.info(f"[APLR] 增量固化后回填节点-主题关联，更新了 {theme_updated} 个节点")
+            logger.info(
+                f"[APLR] 增量固化后回填节点-主题关联，更新了 {theme_updated} 个节点"
+            )
 
     async def summarize_all_themes(self, force=True):
         """为所有需要更新的主题生成总结"""
@@ -428,10 +432,25 @@ class ThematicConsolidator:
 请以此为基础，写下你对这个主题的精炼总结。"""
 
         try:
-            llm_resp = await self.llm_generate(
-                prompt=prompt, system_prompt=system_prompt
-            )
-            return llm_resp.completion_text.strip()
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    llm_resp = await self.llm_generate(
+                        prompt=prompt, system_prompt=system_prompt
+                    )
+                    return llm_resp.completion_text.strip()
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        delay = 2**attempt
+                        logger.warning(
+                            f"生成主题总结失败 (尝试 {attempt + 1}/{max_retries}): {e}, {delay}秒后重试..."
+                        )
+                        await asyncio.sleep(delay)
+                    else:
+                        logger.error(
+                            f"生成主题总结最终失败 (已重试 {max_retries} 次): {e}"
+                        )
+                        return ""
         except Exception as e:
             logger.error(f"生成主题总结失败: {e}")
             return ""

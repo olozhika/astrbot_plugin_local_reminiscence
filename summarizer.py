@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import re
@@ -6,6 +7,46 @@ from typing import List
 from .models import DailySummary
 
 logger = logging.getLogger(__name__)
+
+
+def extract_json(text: str) -> str:
+    """从文本中提取 JSON 结构体，处理 Markdown 代码块和前后无关文字"""
+    match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text, re.IGNORECASE)
+    if match:
+        content = match.group(1).strip()
+    else:
+        obj_match = re.search(r"(\{[\s\S]*\}|\[[\s\S]*\])", text)
+        if obj_match:
+            content = obj_match.group(1).strip()
+        else:
+            content = text.strip()
+
+    # 尝试初步解析，如果失败则尝试修复
+    try:
+        json.loads(content)
+        return content
+    except json.JSONDecodeError:
+        return repair_json(content)
+
+
+def repair_json(s: str) -> str:
+    """启发式修复 LLM 生成的破损 JSON（如未转义的双引号、多余的逗号）"""
+    # 1. 处理末尾多余的逗号
+    s = re.sub(r",\s*([\]}])", r"\1", s)
+
+    # 2. 处理字符串内部未转义的双引号
+    # 逻辑：寻找 ": "..." 结构，并对中间内容进行转义
+    # 改进：通过正向预查确保只有在遇到真正的字段结束（", 后面跟 " 或 }/]）时才停止匹配
+    def escape_internal(match):
+        start, content, end = match.groups()
+        # 将中间内容中所有未转义的 " 转义
+        fixed_content = re.sub(r'(?<!\\)"', r"\"", content)
+        return start + fixed_content + end
+
+    # 匹配模式：冒号 + 引号 + 内容 + (引号 + 真正的结构分隔符)
+    s = re.sub(r'(\s*:\s*")([\s\S]*?)("\s*(?:,(?=\s*")|\s*[}\]]))', escape_internal, s)
+
+    return s
 
 
 class DailySummarizer:
@@ -26,46 +67,6 @@ class DailySummarizer:
         self.search_events = search_events_func
         self.prompt_event_summary = prompt_event_summary
         self.prompt_memory_node = prompt_memory_node
-
-    def _extract_json(self, text: str) -> str:
-        """从文本中提取 JSON 结构体，处理 Markdown 代码块和前后无关文字"""
-        match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text, re.IGNORECASE)
-        if match:
-            content = match.group(1).strip()
-        else:
-            obj_match = re.search(r"(\{[\s\S]*\}|\[[\s\S]*\])", text)
-            if obj_match:
-                content = obj_match.group(1).strip()
-            else:
-                content = text.strip()
-
-        # 尝试初步解析，如果失败则尝试修复
-        try:
-            json.loads(content)
-            return content
-        except json.JSONDecodeError:
-            return self._repair_json(content)
-
-    def _repair_json(self, s: str) -> str:
-        """启发式修复 LLM 生成的破损 JSON（如未转义的双引号、多余的逗号）"""
-        # 1. 处理末尾多余的逗号
-        s = re.sub(r",\s*([\]}])", r"\1", s)
-
-        # 2. 处理字符串内部未转义的双引号
-        # 逻辑：寻找 ": "..." 结构，并对中间内容进行转义
-        # 改进：通过正向预查确保只有在遇到真正的字段结束（", 后面跟 " 或 }/]）时才停止匹配
-        def escape_internal(match):
-            start, content, end = match.groups()
-            # 将中间内容中所有未转义的 " 转义
-            fixed_content = re.sub(r'(?<!\\)"', r"\"", content)
-            return start + fixed_content + end
-
-        # 匹配模式：冒号 + 引号 + 内容 + (引号 + 真正的结构分隔符)
-        s = re.sub(
-            r'(\s*:\s*")([\s\S]*?)("\s*(?:,(?=\s*")|\s*[}\]]))', escape_internal, s
-        )
-
-        return s
 
     async def extract_nodes_from_events(
         self,
@@ -131,21 +132,28 @@ class DailySummarizer:
                 llm_resp = await self.llm_generate(
                     prompt=f"请从以下事件中提取记忆节点：\n\n{events_text}",
                     system_prompt=system_prompt,
+                    expect_json=True,
                 )
-                content = self._extract_json(llm_resp.completion_text)
+                content = extract_json(llm_resp.completion_text)
                 data = json.loads(content)
                 nodes_data = data.get("nodes", [])
                 deleted_nodes = data.get("deleted_nodes", [])
                 return [MemoryNode(**n) for n in nodes_data], deleted_nodes
             except json.JSONDecodeError as e:
-                logger.warning(f"提取节点 JSON 解析失败 (尝试 {attempt + 1}/{max_retries}): {e}")
-                logger.debug(f"LLM 原始响应: {llm_resp.completion_text[:500] if 'llm_resp' in locals() else '未获取到'}")
+                logger.warning(
+                    f"提取节点 JSON 解析失败 (尝试 {attempt + 1}/{max_retries}): {e}"
+                )
+                logger.debug(
+                    f"LLM 原始响应: {llm_resp.completion_text[:500] if 'llm_resp' in locals() else '未获取到'}"
+                )
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(2 ** attempt)
+                    await asyncio.sleep(2**attempt)
             except Exception as e:
-                logger.warning(f"提取节点时发生错误 (尝试 {attempt + 1}/{max_retries}): {e}")
+                logger.warning(
+                    f"提取节点时发生错误 (尝试 {attempt + 1}/{max_retries}): {e}"
+                )
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(2 ** attempt)
+                    await asyncio.sleep(2**attempt)
         logger.error(f"提取节点最终失败 (已重试 {max_retries} 次)")
         return None
 
@@ -159,7 +167,7 @@ class DailySummarizer:
         """两阶段总结法：
         1. 提取今日事件与日感想（支持分段处理）。
         2. 提取/更新记忆节点。
-        
+
         Returns:
             tuple: (DailySummary | None, failed_chunks: list[int])
                    failed_chunks 是失败的批次编号列表（从1开始）
@@ -223,13 +231,15 @@ class DailySummarizer:
 
             chunk_success = False
             max_chunk_retries = 2  # 每个批次最多重试2次
-            
+
             for chunk_attempt in range(max_chunk_retries):
                 try:
                     llm_resp1 = await self.llm_generate(
-                        prompt=user_prompt, system_prompt=chunk_system_prompt
+                        prompt=user_prompt,
+                        system_prompt=chunk_system_prompt,
+                        expect_json=True,
                     )
-                    content1 = self._extract_json(llm_resp1.completion_text)
+                    content1 = extract_json(llm_resp1.completion_text)
                     data1 = json.loads(content1)
 
                     chunk_events = data1.get("events", [])
@@ -242,21 +252,27 @@ class DailySummarizer:
                     chunk_success = True
                     break
                 except json.JSONDecodeError as e:
-                    logger.warning(f"分段 {i + 1} 总结 JSON 解析失败 (尝试 {chunk_attempt + 1}/{max_chunk_retries}): {e}")
+                    logger.warning(
+                        f"分段 {i + 1} 总结 JSON 解析失败 (尝试 {chunk_attempt + 1}/{max_chunk_retries}): {e}"
+                    )
                     if chunk_attempt < max_chunk_retries - 1:
-                        await asyncio.sleep(2 ** chunk_attempt)
+                        await asyncio.sleep(2**chunk_attempt)
                 except Exception as e:
-                    logger.warning(f"分段 {i + 1} 总结失败 (尝试 {chunk_attempt + 1}/{max_chunk_retries}): {e}")
+                    logger.warning(
+                        f"分段 {i + 1} 总结失败 (尝试 {chunk_attempt + 1}/{max_chunk_retries}): {e}"
+                    )
                     if chunk_attempt < max_chunk_retries - 1:
-                        await asyncio.sleep(2 ** chunk_attempt)
-            
+                        await asyncio.sleep(2**chunk_attempt)
+
             if not chunk_success:
                 failed_chunks.append(i + 1)
                 logger.error(f"分段 {i + 1} 总结最终失败，已跳过")
 
         # 如果有失败的批次，在结果中添加警告
         if failed_chunks:
-            logger.warning(f"[APLR] 以下批次总结失败: {failed_chunks}，总结内容可能不完整")
+            logger.warning(
+                f"[APLR] 以下批次总结失败: {failed_chunks}，总结内容可能不完整"
+            )
 
         if not all_events and not all_reflections:
             return None, failed_chunks
