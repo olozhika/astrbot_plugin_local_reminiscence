@@ -1,9 +1,12 @@
 import re
 import sqlite3
 import json
+import logging
 from contextlib import contextmanager
 from typing import List
 from .models import DailySummary
+
+logger = logging.getLogger(__name__)
 
 
 class MemoryDB:
@@ -11,9 +14,31 @@ class MemoryDB:
         self.db_path = db_path
         self._init_db()
 
+    @staticmethod
+    def _ensure_columns(cursor, table: str, columns: list[tuple]):
+        """Add missing columns to an existing table.
+
+        ``columns`` is a list of ``(column_name, alter_sql)`` pairs. The table
+        existence is checked first: PRAGMA table_info returns an empty list for
+        a missing table without raising, so a blind ALTER would crash plugin
+        loading with ``no such table``.
+        """
+        cursor.execute(f"PRAGMA table_info({table})")
+        existing = {row[1] for row in cursor.fetchall()}
+        if not existing:
+            logger.warning("[APLR] skip column migration: table %s not found", table)
+            return
+        for name, alter_sql in columns:
+            if name not in existing:
+                cursor.execute(alter_sql)
+
     def _init_db(self):
         with self._get_conn() as conn:
             cursor = conn.cursor()
+
+            # All tables must be created before any ALTER TABLE runs against
+            # them: ALTER on a missing table raises sqlite3.OperationalError and
+            # aborts plugin loading (v1.4.0 regression for fresh installs).
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS events (
                     event_id TEXT PRIMARY KEY,
@@ -23,32 +48,10 @@ class MemoryDB:
                     importance INTEGER CHECK(importance BETWEEN 1 AND 10),
                     emotional_intensity INTEGER CHECK(emotional_intensity BETWEEN 1 AND 10),
                     reflection TEXT,
+                    reinforcement_count INTEGER DEFAULT 0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            # 数据库迁移：检查新列是否存在
-            cursor.execute("PRAGMA table_info(events)")
-            columns = [column[1] for column in cursor.fetchall()]
-            if "reflection" not in columns:
-                cursor.execute("ALTER TABLE events ADD COLUMN reflection TEXT")
-            if "reinforcement_count" not in columns:
-                cursor.execute(
-                    "ALTER TABLE events ADD COLUMN reinforcement_count INTEGER DEFAULT 0"
-                )
-
-            cursor.execute("PRAGMA table_info(nodes)")
-            node_columns = [column[1] for column in cursor.fetchall()]
-            if "aliases" not in node_columns:
-                cursor.execute("ALTER TABLE nodes ADD COLUMN aliases TEXT DEFAULT '[]'")
-            if "related_event_ids" not in node_columns:
-                cursor.execute(
-                    "ALTER TABLE nodes ADD COLUMN related_event_ids TEXT DEFAULT '[]'"
-                )
-            if "related_theme_ids" not in node_columns:
-                cursor.execute(
-                    "ALTER TABLE nodes ADD COLUMN related_theme_ids TEXT DEFAULT '[]'"
-                )
-
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_events_date ON events(date)")
 
             cursor.execute("""
@@ -84,6 +87,9 @@ class MemoryDB:
                     name TEXT PRIMARY KEY,
                     type TEXT,
                     description TEXT,
+                    aliases TEXT DEFAULT '[]',
+                    related_event_ids TEXT DEFAULT '[]',
+                    related_theme_ids TEXT DEFAULT '[]',
                     last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
@@ -131,6 +137,37 @@ class MemoryDB:
                     value TEXT
                 )
             """)
+
+            # Column migrations for databases created by older versions.
+            self._ensure_columns(
+                cursor,
+                "events",
+                [
+                    ("reflection", "ALTER TABLE events ADD COLUMN reflection TEXT"),
+                    (
+                        "reinforcement_count",
+                        "ALTER TABLE events ADD COLUMN reinforcement_count INTEGER DEFAULT 0",
+                    ),
+                ],
+            )
+            self._ensure_columns(
+                cursor,
+                "nodes",
+                [
+                    (
+                        "aliases",
+                        "ALTER TABLE nodes ADD COLUMN aliases TEXT DEFAULT '[]'",
+                    ),
+                    (
+                        "related_event_ids",
+                        "ALTER TABLE nodes ADD COLUMN related_event_ids TEXT DEFAULT '[]'",
+                    ),
+                    (
+                        "related_theme_ids",
+                        "ALTER TABLE nodes ADD COLUMN related_theme_ids TEXT DEFAULT '[]'",
+                    ),
+                ],
+            )
             conn.commit()
 
     @contextmanager
