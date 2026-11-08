@@ -38,7 +38,7 @@ import numpy as np
 
 
 @register(
-    "local_reminiscence", "olozhika", "基于定时总结和向量化的本地记忆插件", "1.4.0"
+    "local_reminiscence", "olozhika", "基于定时总结和向量化的本地记忆插件", "1.4.2"
 )
 class LocalReminiscencePlugin(Star):
     _bg_tasks = []
